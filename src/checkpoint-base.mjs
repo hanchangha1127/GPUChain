@@ -1,5 +1,5 @@
 import { hash, verify } from './crypto.mjs';
-import { replay } from './ledger.mjs';
+import { replay, verifyNetworkStage } from './ledger.mjs';
 
 export const hexHash = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 
@@ -13,6 +13,7 @@ export function verifySnapshotIdentity({genesis,state,epochHashes}, chainId) {
       !Array.isArray(epochHashes) || epochHashes.length !== state.epoch || !epochHashes.every(hexHash)) {
     throw Error('Unexpected checkpoint identity or epoch hashes');
   }
+  verifyNetworkStage(state,initial);
   return initial;
 }
 

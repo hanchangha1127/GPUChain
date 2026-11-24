@@ -3,6 +3,10 @@ import { authenticate, nextCheckpoint } from '../../src/checkpoint.mjs';
 import { activateCheckpoint, createActivation } from '../../src/consensus.mjs';
 import { checkEnrollment, checkReadiness, limitedJson, readCandidates, recordCandidate } from '../../src/enrollment.mjs';
 import { DIRECTORY_URL, directoryOrigins } from '../../src/peer-directory.mjs';
+import { checkoutPage, checkoutScript } from './checkout.mjs';
+import { ledgerPage, ledgerScript } from './ledger-page.mjs';
+import { salesRoute } from './sales.mjs';
+import { commitHostedTransaction, prepareSalesRetirement, retirementGuard } from './sale-holds.mjs';
 import { canValidate, EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
 
 const MAX_TX_BYTES = 16_384;
@@ -79,26 +83,10 @@ function status(state, retired) {
   const {chainId, tip, height, providers, epoch, epochTokens, totalWorkTokens, maxOutputTokens} = state;
   return {mode:retired ? 'retired' : 'sequencer', chainId, tip, height, providers, epoch, epochTokens, totalWorkTokens,
     maxOutputTokens, epochTarget:EPOCH_TOKENS, syncError:null, inference:false,
+    networkId:state.networkId,networkStage:state.networkStage ?? 'bootstrap',supplyNanocoins:state.supply,
     eligibleValidatorCount:new Set([...providers,...(state.validatorAddresses ?? [])].filter(a=>a !== state.sequencer)).size};
 }
 
-function homepage(state, retired) {
-  const body = `<!doctype html><html lang="en"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>GPUChain ledger</title>
-<style>body{margin:4rem auto;padding:0 1.5rem;max-width:48rem;font:1rem/1.6 system-ui;color:#192b3a;background:#f5f9fc}
-h1{font-size:2rem;margin:0}dl{background:white;padding:1.4rem;border:1px solid #bdcbd5;border-radius:.6rem}
-dt{font-weight:650}dd{margin:0 0 .8rem;overflow-wrap:anywhere}a{color:#045a84}nav{display:flex;gap:1.3rem;flex-wrap:wrap}</style>
-<main><h1>GPUChain ledger</h1><p>${retired ? 'Participating validators now settle transactions. This endpoint serves the certified transition checkpoint.' : 'This sequencer settles signed transfers and inference receipts.'}</p>
-<dl><dt>Genesis hash</dt><dd><code>${state.chainId}</code></dd>
-<dt>Accepted transactions</dt><dd>${state.height}</dd><dt>Registered providers</dt><dd>${state.providers.length}</dd>
-<dt>Validator-only authorizations</dt><dd>${(state.validatorAddresses ?? []).length}</dd>
-<dt>Completed epochs</dt><dd>${state.epoch}</dd><dt>Eligible tokens in current epoch</dt>
-<dd>${state.epochTokens} / 1,000,000,000</dd></dl>
-<nav><a href="/v1/genesis">Genesis file</a><a href="/v1/checkpoint">Signed checkpoint</a>
-<a href="/v1/status">Node status</a></nav></main></html>`;
-  return new Response(body, {headers:{...noCache, 'content-type':'text/html; charset=utf-8',
-    'content-security-policy':"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'"}});
-}
 
 async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDirectory}) {
   if (head.authority) return json({active:true,checkpoint:head});
@@ -106,7 +94,8 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
   try { member = checkEnrollment(intent,head.state,{allowLoopback}); }
   catch (err) { throw new HttpError(400,err.message); }
   let ready;
-  try { ready = await checkReadiness(member,fetchReady); }
+  const production=head.state.networkStage==='mainnet';
+  try { ready = await checkReadiness(member,fetchReady,Boolean(head.state.reserveClaim),production); }
   catch { throw new HttpError(409,'Cannot verify validator readiness at the signed origin'); }
   let roster;
   try { roster = await recordCandidate(db,{payload:member,signature:intent.signature}); }
@@ -115,7 +104,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
 
   const probes = await Promise.allSettled(roster.candidates.map(item=>item.payload)
     .filter(candidate => canValidate(head.state,candidate.address))
-    .map(candidate => candidate.address === ready.address ? ready : checkReadiness(candidate,fetchReady)));
+    .map(candidate => candidate.address === ready.address ? ready : checkReadiness(candidate,fetchReady,Boolean(head.state.reserveClaim),production)));
   const reachable = probes.filter(r => r.status === 'fulfilled').map(r => r.value);
   if (reachable.length < 3) return json({active:false,checkpoint:head});
   let published = [];
@@ -123,6 +112,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
   catch { /* Retry enrollment when clients can discover the committee. */ }
   const validators = reachable.filter(v => published.includes(v.url)).slice(0,3);
   if (validators.length < 3) return json({active:false,checkpoint:head,waitingFor:'published-validator-origins'});
+  if (!await prepareSalesRetirement(db,head.state)) return json({active:false,checkpoint:head,waitingFor:'open-sale-orders'});
   const authority = createActivation(head,validators,wallet);
   const checkpoint = activateCheckpoint(head,authority);
   const encoded = JSON.stringify(checkpoint);
@@ -130,7 +120,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
     throw new HttpError(507,'Activated checkpoint exceeds the capacity of this hosted node');
   }
   const changed = await db.prepare(`UPDATE ledger_head SET tip=?,checkpoint=? WHERE id=1 AND tip=?
-    AND EXISTS(SELECT 1 FROM ledger_head WHERE id=3 AND tip=?)`)
+    AND EXISTS(SELECT 1 FROM ledger_head WHERE id=3 AND tip=?)`+retirementGuard(head.state))
     .bind('retired:' + hash(authority),encoded,head.state.tip,roster.digest).run();
   if (changed.meta.changes !== 1) throw new HttpError(409,'Ledger or enrollment changed concurrently; retry');
   // Do not return signatures authorizing the committee before its durable fence commits.
@@ -139,9 +129,13 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
 
 async function dispatch(request, env, options) {
   const path = new URL(request.url).pathname;
+  if (request.method === 'GET' && (path === '/' || path === '/buy')) return checkoutPage();
+  if (request.method === 'GET' && path === '/buy.js') return checkoutScript();
+  if (request.method === 'GET' && path === '/ledger.js') return ledgerScript();
+  if (path.startsWith('/v1/sales/')) return salesRoute(request,env,path);
   const isWrite = request.method === 'POST' && ['/v1/transactions','/v1/consensus/enroll'].includes(path);
   const isRead = request.method === 'GET' &&
-    ['/', '/v1/status', '/v1/genesis', '/v1/checkpoint','/v1/consensus/candidates'].includes(path);
+    ['/ledger', '/v1/status', '/v1/genesis', '/v1/checkpoint','/v1/consensus/candidates'].includes(path);
   if (!isRead && !isWrite) throw new HttpError(404, 'Route not found');
   const tx = isWrite ? await transactionBody(request) : undefined;
   const {wallet, initial} = setup(env);
@@ -149,7 +143,7 @@ async function dispatch(request, env, options) {
   const db = env.DB.withSession('first-primary');
   const head = await readHead(db, initial);
   if (isRead) {
-    if (path === '/') return homepage(head.state,Boolean(head.authority));
+    if (path === '/ledger') return ledgerPage(head.state,Boolean(head.authority));
     if (path === '/v1/checkpoint') return json(head);
     if (path === '/v1/genesis') return json(head.genesis);
     if (path === '/v1/consensus/candidates') {
@@ -173,9 +167,8 @@ async function dispatch(request, env, options) {
   if (new TextEncoder().encode(checkpoint).length > MAX_HEAD_BYTES) {
     throw new HttpError(507, 'Checkpoint exceeds the capacity of this hosted node');
   }
-  const result = await db.prepare('UPDATE ledger_head SET tip = ?, checkpoint = ? WHERE id = 1 AND tip = ?')
-    .bind(next.state.tip, checkpoint, head.state.tip).run();
-  if (result.meta.changes !== 1) throw new HttpError(409, 'Ledger advanced concurrently; retry with current state');
+  try {await commitHostedTransaction(db,head.state,next.state,checkpoint,tx.payload.type);}
+  catch(err){if(err.status===409)throw new HttpError(409,err.message);throw err;}
   return json({block}, 201);
 }
 
@@ -187,7 +180,7 @@ function publicDirectoryReader() {
     freshUntil = Date.now()+30_000;
     try {
       const response = await fetch(DIRECTORY_URL,{
-        redirect:'error',credentials:'omit',signal:AbortSignal.timeout(3000)
+        redirect:'manual',credentials:'omit',signal:AbortSignal.timeout(3000)
       });
       cached = await limitedJson(response,32*1024);
     } catch { cached = null; }

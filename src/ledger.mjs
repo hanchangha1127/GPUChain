@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { hash, sign, verify } from './crypto.mjs';
 import { decodeAmount, encodeAmount, RESERVE_NANOCOINS } from './amount.mjs';
+import { SALE_MERCHANT, SALE_TOKENS, SALE_NANO_PER_MICRO, SALE_TERMS } from './sale-policy.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
+import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 
 export const MODEL = 'Qwen3.8-Flash-Next';
 export const CONTEXT = 262_144;
@@ -17,6 +19,9 @@ export const DISTRIBUTION_RESERVE = Object.freeze({
 const PROTOCOL = 'gpuchain/1';
 const HEX64 = /^[0-9a-f]{64}$/;
 const RESERVE_ISSUER = '0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e';
+export const MAINNET = Object.freeze({chainId:DISTRIBUTION_RESERVE.chainId, issuer:RESERVE_ISSUER,
+  fromNetworkId:'gpuchain-sites-testnet-1',networkId:'gpuchain-mainnet-1',networkStage:'mainnet',
+  validatorProtocol:'gpuchain/mainnet-ed25519-kv-q8/v1'});
 
 function requireValue(ok, message) {
   if (!ok) throw new Error(message);
@@ -124,6 +129,15 @@ function genesisState(block, trustedGenesisHash) {
   });
 }
 
+export function heldSaleAmount(state) {
+  return Object.values(state.saleHolds ?? {}).reduce((sum,hold)=>sum+decodeAmount(hold.amount),0n);
+}
+
+export function spendableBalance(state,address) {
+  const total=decodeAmount(state.balances[address] ?? 0);
+  return address===DISTRIBUTION_RESERVE.address ? total-heldSaleAmount(state) : total;
+}
+
 function pay(state, from, to, amount) {
   hex64(to, 'recipient');
   requireValue(from !== to, 'Sender and recipient must be different');
@@ -131,6 +145,9 @@ function pay(state, from, to, amount) {
   requireValue(n > 0n, 'Invalid transfer amount');
   const balance = decodeAmount(state.balances[from] ?? 0);
   requireValue(balance >= n, 'Insufficient balance');
+  if (from===DISTRIBUTION_RESERVE.address) {
+    requireValue(spendableBalance(state,from)>=n,'Outstanding paid-order reservations constrain the reserve balance');
+  }
   return {...state.balances, [from]: encodeAmount(balance - n),
     [to]: encodeAmount(decodeAmount(state.balances[to] ?? 0) + n, 'recipient balance')};
 }
@@ -153,6 +170,148 @@ export function distributionReserveEffect(state, payload) {
   };
 }
 
+/** A reserve owner's signature authorizes or revokes a narrowly scoped settlement signer. */
+export function saleMandateEffect(state,p) {
+  const r=DISTRIBUTION_RESERVE, old=state.saleMandate;
+  requireValue(state.chainId===r.chainId && p.chainId===r.chainId && state.reserveClaim===r.claim &&
+    p.from===r.address,'Sale authorization requires the issued public reserve wallet');
+  const version=integer((old?.version ?? 0)+1,'sale mandate version',1);
+  if (p.type==='suspend-sales') {
+    requireValue(old?.active,'No active sale mandate');
+    return {saleMandate:{...old,version,active:false}};
+  }
+  requireValue(p.type==='authorize-sales','Invalid sale mandate');
+  requireValue(p.terms===SALE_TERMS,'Invalid USDT sale price');
+  hex64(p.authority,'sale authority');
+  requireValue(p.authority!==r.address && p.authority!==state.sequencer,'Expected a separate sale authority');
+  const cap=decodeAmount(p.cap,'sale cap'), spent=old?.spent ?? 0;
+  requireValue(cap>0n && cap<=decodeAmount(r.amount) && cap>=decodeAmount(spent)+heldSaleAmount(state),'Invalid cumulative sale cap');
+  return {saleMandate:{version,authority:p.authority,cap:p.cap,spent,active:true,terms:SALE_TERMS}};
+}
+
+const validSaleOrderId=id=>typeof id==='string' && /^[A-Za-z0-9_-]{16,128}$/.test(id);
+export function saleHoldCommitment(p) {
+  return hash({domain:'gpuchain/sale-hold/v1',chainId:DISTRIBUTION_RESERVE.chainId,terms:SALE_TERMS,
+    orderId:p.orderId,to:p.to,amount:p.amount,evmChainId:p.evmChainId});
+}
+
+function findHold(state,id) {
+  return Object.hasOwn(state.saleHolds ?? {},id) ? state.saleHolds[id] : undefined;
+}
+
+/** A unique order lock retains only a fixed commitment and exact amount. */
+export function saleHoldEffect(state,p) {
+  const m=state.saleMandate,r=DISTRIBUTION_RESERVE;
+  requireValue(state.chainId===r.chainId && p.chainId===r.chainId && state.reserveClaim===r.claim &&
+    m?.terms===SALE_TERMS && p.from===m.authority && p.mandateVersion===m.version,
+  'Holds require the current reserve mandate');
+  requireValue(validSaleOrderId(p.orderId),'Invalid sale order ID');
+  const existing=findHold(state,p.orderId);
+  if (p.type==='release-sale') {
+    requireValue(existing && existing.commitment===p.commitment,'Unknown or mismatched sale hold');
+    const saleHolds={...state.saleHolds};
+    delete saleHolds[p.orderId];
+    return saleHolds;
+  }
+  requireValue(p.type==='hold-sale' && m.active===true && !existing,'New sale hold unavailable');
+  requireValue((p.evmChainId===1 || p.evmChainId===56) && p.to!==r.address,'Invalid sale hold terms');
+  hex64(p.to,'sale hold recipient');
+  requireValue(Object.keys(state.saleHolds ?? {}).length<256,'Too many outstanding sale holds');
+  const amount=decodeAmount(p.amount,'sale hold amount'), total=heldSaleAmount(state)+amount;
+  requireValue(amount>0n && amount%SALE_NANO_PER_MICRO===0n &&
+    total<=decodeAmount(state.balances[r.address] ?? 0) &&
+    total+decodeAmount(m.spent)<=decodeAmount(m.cap),'Insufficient unreserved inventory or allowance');
+  return {...state.saleHolds,[p.orderId]:{amount:p.amount,commitment:saleHoldCommitment(p)}};
+}
+
+/** Deterministic reserve debit after the enclosing transition verifies the delegated signature/nonce. */
+export function saleDeliveryEffect(state,p,quorum=false) {
+  const r=DISTRIBUTION_RESERVE, mandate=state.saleMandate;
+  const hold=findHold(state,p.orderId);
+  requireValue(state.chainId===r.chainId && p.chainId===r.chainId && state.reserveClaim===r.claim &&
+    p.type==='deliver-sale' && mandate?.terms===SALE_TERMS && (mandate.active || hold) &&
+    p.from===mandate.authority && p.mandateVersion===mandate.version,
+  'Sales require the current reserve-authorized settlement signer');
+  const sequence=integer(p.sequence,'sale sequence',1);
+  requireValue(sequence===(state.lastSale?.sequence ?? 0)+1,'Unexpected sale sequence');
+  requireValue((p.evmChainId===1 || p.evmChainId===56) && typeof p.txHash==='string' &&
+    /^0x[0-9a-f]{64}$/.test(p.txHash) && typeof p.logIndex==='string' &&
+    /^(?:0|[1-9][0-9]{0,9})$/.test(p.logIndex),'Invalid payment event');
+  requireValue(p.payTo===SALE_MERCHANT && p.token===SALE_TOKENS[p.evmChainId] &&
+    validSaleOrderId(p.orderId),'Invalid USDT sale terms');
+  requireValue(p.paymentId==='eip155:'+p.evmChainId+':'+p.txHash+':'+p.logIndex &&
+    p.paymentId!==state.lastSale?.paymentId,'Invalid or repeated sale payment ID');
+  requireValue(typeof p.usdtMicros==='string' && /^[1-9][0-9]{0,18}$/.test(p.usdtMicros) &&
+    BigInt(p.usdtMicros)*SALE_NANO_PER_MICRO===decodeAmount(p.amount) && decodeAmount(p.amount)<=decodeAmount(r.amount),
+  'Sale amount must equal ten coins per USDT');
+  if (quorum) requireValue(hold?.commitment===saleHoldCommitment(p) && hold.amount===p.amount,
+    'Quorum delivery requires the matching confirmed sale hold');
+  const debitState={...state};
+  if (hold) {
+    requireValue(hold.commitment===saleHoldCommitment(p),'Sale hold terms differ');
+    debitState.saleHolds={...state.saleHolds};
+    delete debitState.saleHolds[p.orderId];
+  }
+  const spent=decodeAmount(mandate.spent)+decodeAmount(p.amount);
+  requireValue(spent+heldSaleAmount(debitState)<=decodeAmount(mandate.cap),'Sale allowance exceeded');
+  return {...(hold?{saleHolds:debitState.saleHolds}:{}),balances:pay(debitState,r.address,p.to,p.amount),saleMandate:{...mandate,spent:encodeAmount(spent)},
+    lastSale:{sequence,paymentId:p.paymentId,recipient:p.to,amount:p.amount}};
+}
+
+/** The bootstrap signer authorizes the exact current state as the production launch boundary. */
+export function mainnetPromotionPayload(state) {
+  const m=state.saleMandate;
+  requireValue(state.chainId===MAINNET.chainId && state.sequencer===MAINNET.issuer &&
+    state.networkId===MAINNET.fromNetworkId && !Object.hasOwn(state,'mainnetPromotion') &&
+    !Object.hasOwn(state,'networkStage'),'Expected the unpromoted original public network');
+  requireValue(state.reserveClaim===DISTRIBUTION_RESERVE.claim &&
+    decodeAmount(state.supply)===decodeAmount(DISTRIBUTION_RESERVE.amount)+BigInt(NANOCOINS),
+  'Issue the designated distribution reserve before mainnet promotion');
+  requireValue(m?.active===true && m.terms===SALE_TERMS && m.cap===DISTRIBUTION_RESERVE.amount &&
+    Number.isSafeInteger(m.version) && m.version>=1 && typeof m.authority==='string' && HEX64.test(m.authority) &&
+    m.authority!==MAINNET.issuer && m.authority!==DISTRIBUTION_RESERVE.address &&
+    decodeAmount(m.spent)<=decodeAmount(m.cap),'Mainnet launch requires the authorized 10:1 sale mandate');
+  integer(state.height,'pre-promotion height',1);
+  hex64(state.tip,'pre-promotion tip');
+  return {type:'promote-mainnet', chainId:MAINNET.chainId,from:MAINNET.issuer,
+    nonce:integer((state.nonces[MAINNET.issuer] ?? 0)+1,'promotion nonce',1),
+    fromNetworkId:MAINNET.fromNetworkId, networkId:MAINNET.networkId, networkStage:MAINNET.networkStage,
+    anchorHeight:state.height,anchorTip:state.tip,anchorStateHash:hash(state)};
+}
+
+/** Called only after transition checks the signed transaction and account nonce. */
+export function mainnetPromotionEffect(state,tx) {
+  const expected=mainnetPromotionPayload(state);
+  requireValue(hash(tx.payload)===hash(expected),'Mainnet promotion does not match the official network and current tip');
+  return {networkId:MAINNET.networkId,networkStage:MAINNET.networkStage,mainnetPromotion:structuredClone(tx)};
+}
+
+/** Verify the persistent promotion certificate of a pruned ledger snapshot. */
+export function verifyNetworkStage(state,initial) {
+  if (!Object.hasOwn(state,'networkStage') && !Object.hasOwn(state,'mainnetPromotion')) {
+    requireValue(state.networkId===initial.networkId,'Network identity requires an authenticated promotion');
+    return;
+  }
+  const tx=state.mainnetPromotion;
+  requireValue(state.chainId===MAINNET.chainId && initial.networkId===MAINNET.fromNetworkId &&
+    initial.sequencer===MAINNET.issuer && state.networkId===MAINNET.networkId &&
+    state.networkStage===MAINNET.networkStage,'Invalid mainnet identity');
+  fields(tx,['payload','signature']);
+  const p=tx.payload;
+  fields(p,['type','chainId','from','nonce','fromNetworkId','networkId','networkStage','anchorHeight','anchorTip','anchorStateHash']);
+  integer(p.anchorHeight,'promotion anchor height',1);
+  integer(p.nonce,'promotion nonce',1);
+  hex64(p.anchorTip,'promotion anchor tip');
+  hex64(p.anchorStateHash,'promotion anchor state hash');
+  requireValue(p.type==='promote-mainnet' && p.chainId===MAINNET.chainId && p.from===MAINNET.issuer &&
+    p.fromNetworkId===MAINNET.fromNetworkId && p.networkId===MAINNET.networkId && p.networkStage===MAINNET.networkStage &&
+    state.height>p.anchorHeight && state.nonces?.[MAINNET.issuer]>=p.nonce &&
+    state.reserveClaim===DISTRIBUTION_RESERVE.claim &&
+    decodeAmount(state.supply)===decodeAmount(DISTRIBUTION_RESERVE.amount)+BigInt(NANOCOINS),
+  'Invalid mainnet promotion certificate');
+  signature(MAINNET.issuer,p,tx.signature,'mainnet promotion');
+}
+
 const BASE = ['type', 'from', 'chainId', 'nonce'];
 export function canValidate(state, address) {
   return address !== state.sequencer &&
@@ -162,6 +321,13 @@ export function canValidate(state, address) {
 const EXTRA = Object.freeze({
   transfer: ['to', 'amount'],
   'issue-reserve': ['to', 'amount', 'claim'],
+  'promote-mainnet':['fromNetworkId','networkId','networkStage','anchorHeight','anchorTip','anchorStateHash'],
+  'deliver-sale': ['to','amount','sequence','paymentId','usdtMicros','evmChainId','txHash','logIndex',
+    'mandateVersion','orderId','payTo','token'],
+  'authorize-sales':['authority','cap','terms'],
+  'suspend-sales':[],
+  'hold-sale':['orderId','to','amount','evmChainId','mandateVersion'],
+  'release-sale':['orderId','commitment','mandateVersion'],
   'add-provider': ['provider'],
   'add-validator': ['validator'],
   'set-provider-endpoint': ['provider', 'endpoint'],
@@ -169,11 +335,12 @@ const EXTRA = Object.freeze({
   settings: ['maxOutputTokens'],
 });
 
-function transition(state, tx) {
+function transition(state, tx, quorum=false) {
   const p = tx?.payload;
   requireValue(record(p) && typeof p.type === 'string' && Object.hasOwn(EXTRA, p.type), 'Unknown transaction type');
   const expected = [...BASE, ...EXTRA[p.type]];
   if (p.type === 'add-provider' && Object.hasOwn(p, 'endpoint')) expected.push('endpoint');
+  if (p.type==='inference' && (state.networkStage===MAINNET.networkStage || Object.hasOwn(p,'kvCache'))) expected.push('kvCache');
   fields(p, expected);
   fields(tx, p.type === 'inference' ? ['payload', 'signature', 'providerSignature'] : ['payload', 'signature']);
   requireValue(p.chainId === state.chainId, 'Invalid chainId');
@@ -181,11 +348,26 @@ function transition(state, tx) {
   integer(p.nonce, 'nonce', 1);
   requireValue(p.nonce === (state.nonces[p.from] ?? 0) + 1, 'Unexpected nonce');
   signature(p.from, p, tx.signature, 'sender');
+  if (p.from===state.saleMandate?.authority) {
+    requireValue(['deliver-sale','hold-sale','release-sale'].includes(p.type),'Dedicated sale signer may only settle sales');
+  }
   const next = {...state, nonces: {...state.nonces, [p.from]: p.nonce}};
   if (p.type === 'transfer') {
     next.balances = pay(state, p.from, p.to, p.amount);
   } else if (p.type === 'issue-reserve') {
     Object.assign(next,distributionReserveEffect(state,p));
+  } else if (p.type==='promote-mainnet') {
+    requireValue(!quorum,'Mainnet promotion must be finalized by the original bootstrap signer');
+    Object.assign(next,mainnetPromotionEffect(state,tx));
+  } else if (p.type === 'deliver-sale') {
+    Object.assign(next,saleDeliveryEffect(state,p,quorum));
+    if (next.saleHolds && !Object.keys(next.saleHolds).length) delete next.saleHolds;
+  } else if (p.type==='hold-sale' || p.type==='release-sale') {
+    requireValue(quorum,'On-chain order holds are used after validator activation');
+    next.saleHolds=saleHoldEffect(state,p);
+    if (!Object.keys(next.saleHolds).length) delete next.saleHolds;
+  } else if (p.type === 'authorize-sales' || p.type === 'suspend-sales') {
+    Object.assign(next,saleMandateEffect(state,p));
   } else if (p.type === 'add-validator') {
     requireValue(p.from === state.sequencer, 'Only the sequencer can authorize a validator');
     hex64(p.validator, 'validator address');
@@ -216,6 +398,10 @@ function transition(state, tx) {
   } else {
     requireValue(state.providers.includes(p.provider), 'Unregistered provider');
     requireValue(p.model === MODEL && p.contextWindow === CONTEXT, 'Unsupported model or context window');
+    if (Object.hasOwn(p,'kvCache')) {
+      fields(p.kvCache,['k','v']);
+      requireValue(kvCacheAtLeastQ8(p.kvCache),'KV cache precision must be at least Q8 for both K and V');
+    }
     hex64(p.requestHash, 'request hash');
     hex64(p.responseHash, 'response hash');
     const amount = charge(p);
@@ -243,7 +429,7 @@ export function applyQuorumTransaction(state, tx, tip) {
   hex64(tip, 'quorum block hash');
   requireValue(tx?.payload?.type !== 'issue-reserve', 'Reserve issuance is closed after activation');
   requireValue(tx?.payload?.type !== 'add-validator', 'The voting committee is fixed after activation');
-  return immutable({...transition(state, tx),height:integer(state.height+1,'height'),tip});
+  return immutable({...transition(state, tx,true),height:integer(state.height+1,'height'),tip});
 }
 
 /** Sign a valid next block without mutating state. */

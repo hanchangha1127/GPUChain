@@ -20,6 +20,16 @@ export function verifyAdvance(prior,next) {
   if (prior.authority && (!next.authority || hash(next.authority) !== hash(prior.authority))) {
     throw Error('Consensus authority downgrade or conflict');
   }
+  if (old.mainnetPromotion) {
+    if (!state.mainnetPromotion || hash(state.mainnetPromotion)!==hash(old.mainnetPromotion)) {
+      throw Error('Mainnet promotion downgrade or conflict');
+    }
+  } else if (state.mainnetPromotion) {
+    const p=state.mainnetPromotion.payload;
+    if (old.height>p.anchorHeight || (old.height===p.anchorHeight && (old.tip!==p.anchorTip || hash(old)!==p.anchorStateHash))) {
+      throw Error('Checkpoint conflicts with the mainnet promotion anchor');
+    }
+  }
   if (!prior.authority && next.authority) {
     const {anchorHeight,anchorHash} = next.authority.payload;
     if (old.height > anchorHeight || (old.height === anchorHeight && hash(prior) !== anchorHash)) {

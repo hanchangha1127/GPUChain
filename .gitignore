@@ -2,6 +2,9 @@
 *.sqlite
 *.sqlite-*
 *.wallet.json
+*.wallet.json.*.tmp
+*.keystore.json
+*.keystore.json.*.tmp
 .env
 .env.*
 node_modules/

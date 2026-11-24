@@ -2,13 +2,15 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
-GPUChain 是为 Qwen3.8-Flash-Next 开发的**实验性推理积分网络，目前尚未完成**。你可以在自己的 GPU 上运行 RYZENStrata，为其他人处理文本请求并赚取代币。关掉自己的 GPU 后，你仍然可以花费代币使用其他节点，也可以把代币转给另一个钱包。公开测试网由 Sites 上的排序节点启动，之后可以自动转由参与者验证交易。[RYZENStrata 项目](https://github.com/hanchangha1127/RYZENStrata)
+GPUChain 公开主网 `gpuchain-mainnet-1` 目前以小规模试点方式运行。由签名交易完成的原链升级保留原创世哈希、钱包地址、余额和交易序号。运行 `node src/cli.mjs verify` 可核对 `networkStage` 是否为 `mainnet`。为兼容现有客户端，创世文件仍使用原文件名 `sites-testnet.json`。
 
-**把这个仓库的 URL 发给代理，就能在后台启动公开测试网的验证节点。** 也可以在装有 Node.js 24 或更高版本的机器上克隆仓库，运行 `npm start`。节点创建或复用自己的钱包和数据库，持续验证已签名的检查点，保存最新的已验证状态。关闭终端或结束代理会话后，节点仍然运行。参与验证无需 GPU、模型下载或公网 IP。[代理安装指南](../AGENTS.md) · [公开测试网运行说明](../hosting/sites/README.md)
+**把这个仓库的 URL 发给代理，就能在后台启动公开主网的验证节点。** 也可以在装有 Node.js 24 或更高版本的机器上克隆仓库，运行 `npm start`。节点创建或复用自己的钱包和数据库，持续验证已签名的检查点，保存最新的已验证状态。关闭终端或结束代理会话后，节点仍然运行。参与验证无需 GPU、模型下载或公网 IP。[代理安装指南](../AGENTS.md) · [公开主网运行说明](../hosting/sites/README.md)
 
 运行 `npm run status` 查看本机节点已验证的高度和投票状态。`npm stop` 停止节点，`npm start` 用原有数据恢复运行。只需检查一次连接和推理节点时，运行 `npm run join`。
 
-**打开钱包界面**：运行 `npm run gui`，或在 Windows 上双击 **GPUChain Wallet.cmd**。程序会启动节点或使用已运行的节点，再打开浏览器。只读界面显示钱包的公开地址和已验证余额、节点的同步和投票状态，以及本机推理服务适配器的状态。界面使用单独的本机回环端口。运行 `node scripts/open-wallet.mjs --print-url` 可查看实际地址。
+**打开钱包界面**：运行 `npm run gui`，或在 Windows 上双击 **GPUChain Wallet.cmd**。程序会启动节点或使用已运行的节点，再打开浏览器。本机界面显示钱包的公开地址和已验证余额、节点的同步和投票状态，以及本机推理服务适配器的状态。界面使用单独的本机回环端口。运行 `node scripts/open-wallet.mjs --print-url` 可查看实际地址。 如需转账，请打开 `GPUChain Unlock.cmd` 或运行 `npm run wallet:unlock` 获取一次性代码，在本机输入并核对收款地址和金额后确认。
+
+界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。公开商店的售价为 1 USDT 购买 10 枚代币。付款前先登记 GPUChain 收款地址。[购买说明](usdt-sales.md) · [备份与恢复](wallet-backup.md)
 
 ## 账本验证与共识投票
 
@@ -18,7 +20,7 @@ Sites 核验三个就绪节点的签名、地址和数据库标识后，签发�
 
 ## 计费和设置更新周期
 
-每个提供者都需要提供 **256K（262,144 个 token）的上下文窗口**。适配器检查 RYZENStrata 报告的已加载模型和上下文容量。每个请求签名授权的输入与输出上限之和不能超过 256K，结算按实际用量计算。
+目前仅支持 **Qwen3.8-Flash-Next** 及其兼容量化版本。模型上下文至少为 **262,144 个 token（256K）**，运行中的 K 缓存和 V 缓存必须**分别达到 Q8 或更高精度**。Q2_0 权重可以配合 Q8 KV 缓存。适配器在推理前和签发收据前检查 `/metrics` 报告的模型、上下文和 KV 格式。
 
 | 用量 | 每百万 token 的代币数 | 计入周期进度 |
 | --- | ---: | --- |
@@ -34,7 +36,7 @@ Sites 核验三个就绪节点的签名、地址和数据库标识后，签发�
 
 需要独立开发网络时，运行 `node scripts/bootstrap.mjs` 即可启动。也可以按以下步骤分别启动各个角色。
 
-需要 Node.js 24 或更高版本。在仓库根目录的 PowerShell 中执行以下命令。钱包、客户端、账本和推理适配器均使用 Node.js 内置模块。提供者需要先在 RYZENStrata 中加载 Qwen 模型，并确保 `/v1/models` 可以访问。默认后端地址为 `http://127.0.0.1:8000/v1`，默认模型 ID 为 `qwen3.8-flash-next-q2_0`。可以通过 `--strata` 和 `--model-id` 指定其他部署。后端启用身份验证时，请在提供者进程的环境中设置 `STRATA_API_KEY`。
+使用 Node.js 24 或更高版本。提供者可以向 `provider` 命令或 `scripts/bootstrap.mjs` 传入 `--engine ryzenstrata`（默认）或 `--engine strata`。前者的默认模型 ID 是 `qwen3.8-flash-next-q2_0`。后者会选择唯一符合要求的已加载模型；有多个候选时请用 `--model-id` 指定。`--strata` 设置引擎地址，`STRATA_API_KEY` 用于后端认证。将公网 HTTPS 转发到本机 GPUChain 适配器的 8789 端口。适配器默认访问 `http://127.0.0.1:8000/v1`。用户通过 `chat` 命令向外发起 HTTPS 请求（通常为 443 端口）。客户端没有面向局域网的 OpenAI 兼容网关。 [Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
 **手动初始化时，在终端 1 创建钱包、分配初始余额并启动排序节点。** 在新的 `.local` 目录下运行一次钱包和创世文件创建命令。下面的配置向请求者分配 1 枚代币。钱包文件含有私钥。多机部署时，每个参与者应在自己的机器上保管钱包。已使用一键启动脚本的用户可直接运行终端 3 的客户端命令。
 
@@ -90,7 +92,7 @@ node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequ
 
 ## 验证、存储和信任边界
 
-请求者对提供者地址、提示词哈希、交易序号和 token 上限等字段签名。提供者检查余额后调用 RYZENStrata，并在收据中签认请求、响应和实际用量。客户端核对收据并追加签名，再交给排序节点结算。两端钱包和排序节点均采用 Ed25519 签名。
+请求者对提供者地址、提示词哈希、交易序号和 token 上限等字段签名。提供者检查余额后调用选定的 Strata 后端，并在收据中签认请求、响应和实际用量。客户端核对收据并追加签名，再交给排序节点结算。两端钱包和排序节点均采用 Ed25519 签名。
 
 排序节点验证交易并以原子方式更新 SQLite。数据库保存最新余额、各地址的交易序号、配置、计数器和链头，每个已结束周期另存一个 32 字节的摘要。交易详情和逐笔收据仅用于当次处理。提示词直接发送给提供者，提供者可以看到内容，并在内存中短暂保留最近一次响应以处理重试。
 

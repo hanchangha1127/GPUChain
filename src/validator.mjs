@@ -8,8 +8,9 @@ import { authenticate, verifyAdvance } from './checkpoint.mjs';
 import { certify, consensusCandidate, votePayload } from './consensus.mjs';
 import { addressFromPrivateKey, hash, sign, verify } from './crypto.mjs';
 import { requestJson } from './http.mjs';
-import { canValidate, EPOCH_TOKENS, replay } from './ledger.mjs';
+import { canValidate, EPOCH_TOKENS, MAINNET, replay } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
+import { SALE_TERMS } from './sale-policy.mjs';
 
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
 const MAX_TX = 16_384;
@@ -356,6 +357,11 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
         need(/^[a-f0-9]{32}$/.test(challenge ?? ''),400,'Invalid readiness challenge');
         const payload = {domain:'gpuchain/validator-ready/v1',chainId:genesis.hash,
           address:wallet.address,origin:advertised,challenge,instanceId:store.instanceId};
+        if (target.searchParams.get('money')==='exact') {
+          payload.moneyCodec='nanocoin-decimal-v1';
+          payload.saleEscrow=SALE_TERMS;
+        }
+        if (target.searchParams.get('stage')==='mainnet') payload.validatorProtocol=MAINNET.validatorProtocol;
         return send(200,{payload,signature:sign(wallet.privateKey,payload)});
       }
       if (req.method === 'GET' && path === '/v1/genesis') return send(200,genesis);

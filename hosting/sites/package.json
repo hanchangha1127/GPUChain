@@ -2,7 +2,10 @@
   "name": "gpuchain-sites-worker",
   "private": true,
   "type": "module",
-  "scripts": { "build": "node build.mjs" },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test check-usdt.mjs"
+  },
   "devDependencies": {
     "@noble/curves": "2.0.1",
     "@noble/hashes": "2.0.1",

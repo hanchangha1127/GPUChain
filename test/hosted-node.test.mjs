@@ -66,7 +66,8 @@ test('hosted sequencer settles once under concurrent submissions and serves a na
   assert.equal(state.balances[provider.address], 10012);
   assert.equal(state.epochTokens, 42);
   assert.equal((await (await request('/v1/status')).json()).inference, false);
-  assert.match(await (await request('/')).text(), /GPUChain ledger/);
+  assert.match(await (await request('/ledger')).text(), /GPUChain ledger/);
+  assert.match(await (await request('/')).text(), /USDT/);
 });
 
 test('hosted enrollment requires three live approved owners and commits one final pivot against the exact tip', {timeout:10_000}, async t => {

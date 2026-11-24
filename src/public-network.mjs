@@ -1,11 +1,11 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import publicGenesis from '../networks/sites-testnet.json' with {type:'json'};
 import bundledDirectory from '../networks/testnet-endpoints.json' with {type:'json'};
-import { authenticate } from './checkpoint.mjs';
+import { authenticate, verifyAdvance } from './checkpoint.mjs';
 import { verifyActivation } from './consensus.mjs';
 import { hash } from './crypto.mjs';
 import { requestJson } from './http.mjs';
@@ -17,6 +17,19 @@ export const publicGenesisPath = fileURLToPath(new URL('../networks/sites-testne
 const PROBE_TIMEOUT = 3500;
 const REFRESH_INTERVAL = 24*60*60*1000;
 const RETRY_INTERVAL = 5*60*1000;
+
+export function bundledMainnetAnchor(chainId) {
+  if (chainId!==publicGenesis.hash) return null;
+  let bytes;
+  try { bytes=readFileSync(new URL('../networks/mainnet-anchor.json',import.meta.url),'utf8'); }
+  catch (err) { if (err.code==='ENOENT') return null; throw err; }
+  const anchor=authenticate(JSON.parse(bytes),chainId);
+  if (anchor.state.networkStage!=='mainnet' || anchor.authority ||
+      anchor.state.height!==anchor.state.mainnetPromotion.payload.anchorHeight+1) {
+    throw Error('Invalid bundled mainnet launch checkpoint');
+  }
+  return anchor;
+}
 
 function openCache(dir) {
   mkdirSync(dir, {recursive:true, mode:0o700});
@@ -78,7 +91,12 @@ function openCache(dir) {
 function checkpointMark(head) {
   const {state,epochHashes,authority} = head;
   const mark = {height:state.height, tip:state.tip, stateHash:hash(state),
-    totalWorkTokens:state.totalWorkTokens, epochHashes};
+    totalWorkTokens:state.totalWorkTokens, epochHashes,networkStage:state.networkStage ?? null};
+  if (state.mainnetPromotion) {
+    const {anchorHeight,anchorTip,anchorStateHash}=state.mainnetPromotion.payload;
+    Object.assign(mark,{promotion:hash(state.mainnetPromotion),promotionHeight:anchorHeight,
+      promotionTip:anchorTip,promotionStateHash:anchorStateHash});
+  }
   return authority ? {...mark,authority:hash(authority),anchorHeight:authority.payload.anchorHeight,
     anchorTip:authority.payload.anchorTip,anchorHash:authority.payload.anchorHash,
     members:authority.payload.validators.map(v=>v.url)} : {...mark,checkpointHash:hash(head)};
@@ -86,6 +104,16 @@ function checkpointMark(head) {
 
 function checkHistory(marks) {
   marks.sort((a,b) => a.height-b.height || Number(Boolean(a.authority))-Number(Boolean(b.authority)));
+  const launch=marks.find(m=>m.promotion);
+  if (launch) {
+    for (const m of marks) {
+      if (m.promotion ? m.promotion!==launch.promotion : (m.networkStage===null &&
+          (m.height>launch.promotionHeight || (m.height===launch.promotionHeight &&
+          (m.tip!==launch.promotionTip || m.stateHash!==launch.promotionStateHash))))) {
+        throw Error('Conflicting signed mainnet promotion or predecessor');
+      }
+    }
+  }
   const committee = marks.find(m=>m.authority);
   if (committee) {
     for (const m of marks) {
@@ -127,6 +155,7 @@ export async function resolvePublicLedger({
   const explicit = seeds.split(',').map(s => s.trim()).filter(Boolean);
   if (explicit.length > PEER_LIMIT) throw Error('Too many GPUCHAIN_LEDGER_URLS entries');
   const configured = [...explicit.map(normalizeProviderEndpoint), ...directoryOrigins(directory, chainId)];
+  const launchAnchor=bundledMainnetAnchor(chainId);
   const cache = openCache(cacheDir);
   const checked = new Set(), observed = [];
   const pendingPins = [];
@@ -160,6 +189,7 @@ export async function resolvePublicLedger({
         try {
           checkpoint = await requestJson(url + '/v1/checkpoint', {timeoutMs:timeLeft() || 1, maxBytes:64*1024*1024});
           authenticate(checkpoint, chainId);
+          if (launchAnchor) verifyAdvance(launchAnchor,checkpoint);
         } catch { continue; }
         verifyPins(checkpoint.genesis);
         if (checkpoint.authority) cache.pin(chainId,checkpoint.authority);
@@ -196,6 +226,7 @@ export async function resolvePublicLedger({
     if (match) return {url:match.url, mode:match.mode, state:latest.state, checkpoint:latest};
   }
   try {
+    if (launchAnchor) cache.update(chainId,[checkpointMark(launchAnchor)],[]);
     const previous = cache.get(chainId);
     let match = await inspect([...configured,...previous.peers]);
     // Learn independent peers while the original host is still healthy. A missing

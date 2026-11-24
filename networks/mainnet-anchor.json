@@ -1,0 +1,67 @@
+{
+  "genesis": {
+    "height": 0,
+    "previousHash": null,
+    "payload": {
+      "protocol": "gpuchain/1",
+      "networkId": "gpuchain-sites-testnet-1",
+      "sequencer": "0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e",
+      "allocations": {
+        "facea670a1c2378baf5fef864a976c53ac08540ad5270b9faf09b8bd543b5b5c": 1000000000
+      },
+      "providers": [],
+      "maxOutputTokens": 262144
+    },
+    "signature": "8bacbfe73e7edaa3b885e2829ddcf2e85cecf3e967c255ce7c7ac062075c29d7dd58138f56df205f4ed0497851a5b0233df1a086c36c4d81660bf9f192729d07",
+    "hash": "a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460"
+  },
+  "state": {
+    "chainId": "a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460",
+    "tip": "1f9b69a51d395a57b458441caa10dbf1413fa9ec6b5495934ff6b3854d425530",
+    "height": 3,
+    "networkId": "gpuchain-mainnet-1",
+    "sequencer": "0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e",
+    "providers": [],
+    "balances": {
+      "facea670a1c2378baf5fef864a976c53ac08540ad5270b9faf09b8bd543b5b5c": 1000000000,
+      "95da9783a4ab7c8115ce1f4e599b2ab7f688779976d6221ea456d183429c7aae": "1000000000000000000000"
+    },
+    "supply": "1000000000001000000000",
+    "nonces": {
+      "0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e": 2,
+      "95da9783a4ab7c8115ce1f4e599b2ab7f688779976d6221ea456d183429c7aae": 1
+    },
+    "totalWorkTokens": 0,
+    "epoch": 0,
+    "epochTokens": 0,
+    "maxOutputTokens": 262144,
+    "pendingMaxOutputTokens": null,
+    "reserveClaim": "gpuchain:public-testnet:distribution-reserve:v1",
+    "saleMandate": {
+      "version": 1,
+      "authority": "3b22863b1cd6049ceb5ffd826b02862f482c28398630ba359da71d288fe1550f",
+      "cap": "1000000000000000000000",
+      "spent": 0,
+      "active": true,
+      "terms": "gpuchain:USDT:10-coins-per-USDT:v2"
+    },
+    "networkStage": "mainnet",
+    "mainnetPromotion": {
+      "payload": {
+        "type": "promote-mainnet",
+        "chainId": "a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460",
+        "from": "0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e",
+        "nonce": 2,
+        "fromNetworkId": "gpuchain-sites-testnet-1",
+        "networkId": "gpuchain-mainnet-1",
+        "networkStage": "mainnet",
+        "anchorHeight": 2,
+        "anchorTip": "e05b80866528c9a73999af1a286fa60476d7c81de092d806b0ad27b8ccd9c8d7",
+        "anchorStateHash": "196332114aadf08d1e3f99415e175f59096eb3713931ec8305e7b14a1b7d7ed1"
+      },
+      "signature": "4a9316d6f7f301782f2374f6418548c110d2ee9177cc9ecea15211b8db8a7dfa1a0fc13639c51be590a8628bd4bdf4c7bb2fb32d0bba95c93653a6bb8b123a07"
+    }
+  },
+  "epochHashes": [],
+  "signature": "0640d3f549418fb70be8a3e2858f12bb745027a68755c90b3a99870e53eab8c0cbe633502454134a56ef910b9762e9fc9dab9b852ef5f28965821e9d5fe75f0d"
+}

@@ -2,13 +2,17 @@
 
 [English](README.md) · [简体中文](docs/README.zh-CN.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Français](docs/README.fr.md)
 
-GPUChain is an **experimental, unfinished inference-credit network** for Qwen3.8-Flash-Next. A provider runs RYZENStrata on its own hardware and earns coins for serving text requests. Wallet holders can transfer earned coins or spend them on another provider, including while their own GPU is offline. Sites runs the initial public ledger and can automatically hand transaction settlement to participating validators. [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+GPUChain runs a public mainnet pilot for paid Qwen3.8-Flash-Next inference. A provider runs Strata on its own hardware and earns coins for completed text requests. Wallet holders can transfer coins or spend them on another provider while their own GPU is offline. Sites hosts the initial sequencer. Once three authorized validators are ready, their committee can settle transactions with two votes.
 
-**Run a public testnet node.** Give this repository URL to an agent, or clone it and run `npm start` with Node.js 24 or later. A background process creates or reuses its local identity, fetches signed checkpoints and keeps the latest verified ledger state. It continues after the terminal or agent session closes. A GPU, model download and public IP are unnecessary for this role. [Agent setup guide](AGENTS.md) · [Public testnet operations](hosting/sites/README.md)
+The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-place promotion keeps the original genesis hash, wallet addresses, balances and transaction nonces. Existing bootstrap and genesis filenames retain `testnet` for compatibility. Check the signed network state with `node src/cli.mjs verify`: the promoted checkpoint has `networkStage` equal to `mainnet`.
+
+**Run a public mainnet node.** Give this repository URL to an agent, or clone it and run `npm start` with Node.js 24 or later. A background process creates or reuses its local identity, fetches signed checkpoints and keeps the latest verified ledger state. It continues after the terminal or agent session closes. A GPU, model download and public IP are unnecessary for this role. [Agent setup guide](AGENTS.md) · [Public mainnet operations](hosting/sites/README.md)
 
 Run `npm run status` to see the local node's verified height and voting status. `npm stop` stops it and `npm start` resumes it with the same data. `npm run join` performs a single connectivity and provider check. Use `node scripts/bootstrap.mjs` only to create an independent local development network.
 
-**Open the wallet.** Run `npm run gui`, or double-click **GPUChain Wallet.cmd** on Windows. It starts or reuses the participant and opens the read-only dashboard in your browser. The dashboard shows the public wallet address and balance from its verified checkpoint, node synchronization and voting status, and the status of the local inference provider adapter. The interface listens on a separate loopback port. To print its actual URL, run `node scripts/open-wallet.mjs --print-url`.
+**Open the wallet.** Run `npm run gui`, or double-click **GPUChain Wallet.cmd** on Windows. It starts or reuses the participant and opens the local wallet dashboard in your browser. The dashboard shows the public wallet address and balance from its verified checkpoint, node synchronization and voting status, and the status of the local inference provider adapter. The interface listens on a separate loopback port. To print its actual URL, run `node scripts/open-wallet.mjs --print-url`. Run `GPUChain Unlock.cmd` (or `npm run wallet:unlock`) to obtain a single-use code for sending coins. Review the full recipient and exact amount, then confirm the transfer in the local wallet.
+
+The wallet opens in English and offers Korean, Japanese, Simplified Chinese and French. On Windows, open **GPUChain Backup.cmd** to save an encrypted copy of the local signing key. Restore requires that file and its password. A voting node also needs its original, current database to retain its certified voting identity. [Backup and recovery](docs/wallet-backup.md)
 
 ## Verification and voting
 
@@ -18,9 +22,13 @@ Sites certifies three ready validators and seals its final checkpoint. Two of th
 
 ## Metering and epochs
 
-The original public genesis allocates one coin. A single sequencer-signed `issue-reserve` transaction can add exactly 1,000,000,000,000 testnet coins to the designated distribution wallet. The chain records a permanent issuance marker. After issuance, total supply is 1,000,000,000,001 coins. Wallets and transfers use exact integer nanocoins, including amounts above JavaScript's safe integer range. The reserve is an inventory of inference credits; a proposed or published sale price does not establish a dollar redemption right.
+The public Sites store sells GPUChain mainnet coins at **10 coins per USDT** on Ethereum and BNB Smart Chain. Register the GPUChain destination and sign the order before transferring from the paying EVM wallet. [Store](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [Payment guide](docs/usdt-sales.md)
 
-Each provider must make a **256K context window (262,144 tokens)** available. GPUChain checks RYZENStrata's loaded model and advertised capacity, then limits the signed input and output budgets to that window. Each request is billed for measured use.
+The original public genesis allocates one coin. A single sequencer-signed `issue-reserve` transaction can add exactly 1,000,000,000,000 coins to the designated distribution wallet. The chain records a permanent issuance marker. After issuance, total supply is 1,000,000,000,001 coins. Wallets and transfers use exact integer nanocoins, including amounts above JavaScript's safe integer range. The reserve is an inventory of inference credits; a proposed or published sale price does not establish a dollar redemption right.
+
+Use `--engine ryzenstrata` (the default) for RYZENStrata or `--engine strata` for upstream Strata. Both `node src/cli.mjs provider` and `node scripts/bootstrap.mjs` accept `--engine`, `--strata` and `--model-id`. RYZENStrata defaults to `qwen3.8-flash-next-q2_0`. Upstream Strata can discover a unique eligible loaded model; specify its qualified ID when multiple models match. Only **Qwen3.8-Flash-Next** and supported quantizations of those weights qualify. Both engines must report at least **262,144 context tokens** and active **K and V caches each at Q8 or higher**. Q2_0 model weights can be paired with Q8 K/V. The adapter checks the native engine's `/metrics` model, context and KV format before generation and again before signing. Missing, low-precision or mixed K8/V4 cache evidence prevents settlement. [Upstream Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+
+For public inference, the requester uses outbound HTTPS (normally port 443) to the ledger and the selected provider. Submit signed requests with `node src/cli.mjs chat`. GPUChain does not expose a LAN OpenAI-compatible consumer gateway. On a provider machine, terminate public HTTPS at the GPUChain adapter on loopback port 8789. The adapter calls the private Strata backend, by default `http://127.0.0.1:8000/v1`.
 
 | Usage | Coins per 1 million tokens | Counts toward an epoch |
 | --- | ---: | --- |
@@ -34,7 +42,7 @@ An epoch closes every **1,000,000,000 uncached input plus output tokens** across
 
 ## Run an independent local network on Windows
 
-Use Node.js 24 or newer. Run each PowerShell block from this repository's root. The ledger, wallet, client and provider adapter use Node's built-in modules. Only the provider needs a running RYZENStrata installation, with the Qwen model loaded and `/v1/models` available. The default backend is `http://127.0.0.1:8000/v1` and the default model ID is `qwen3.8-flash-next-q2_0`. Use `--strata` and `--model-id` if your deployment differs. Set `STRATA_API_KEY` in the provider process environment if the backend requires authentication.
+Use Node.js 24 or newer. Run each PowerShell block from the repository root. The requester, ledger and provider adapter use built-in Node modules. Start the chosen inference engine on the provider machine and set `STRATA_API_KEY` in the provider environment if its backend requires authentication.
 
 **Terminal 1 — create a local network and run the sequencer.** Run wallet and genesis creation once in a fresh `.local` directory. This example assigns one initial coin to the requester. Wallet files contain private keys. Keep them on their owners' machines when running separate hosts.
 
@@ -95,7 +103,7 @@ Ctrl+C stops a service. Restart the sequencer with the same genesis, wallet and 
 
 ## What each node keeps and verifies
 
-The requester signs the provider address, prompt hash, nonce and token limits. The provider checks the current balance and calls RYZENStrata. Its receipt binds the request, response and measured token counts. The client checks these fields, co-signs the receipt and submits it to the sequencer. The two wallets and sequencer use Ed25519 signatures.
+The requester signs the provider address, prompt hash, nonce and token limits. The provider checks the current balance and calls the selected Strata backend. Its receipt binds the request, response and measured token counts. The client checks these fields, co-signs the receipt and submits it to the sequencer. The two wallets and sequencer use Ed25519 signatures.
 
 The sequencer validates the spend and updates SQLite atomically. The database retains the latest balances, nonces, configuration, counters and chain tip, plus one 32-byte digest per completed epoch. Transaction bodies and individual receipts are transient. Prompts and responses travel between the requester and its provider. The provider can see the prompt. A provider process briefly caches its latest response in memory for retries.
 

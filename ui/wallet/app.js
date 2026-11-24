@@ -85,6 +85,7 @@ function render(data) {
   show('activity',bool(inference.inferenceActive,"Generating",inference.busy ? "Handling a request" : "Idle"));
   show('model',inference.model);
   show('engine',({strata:'Strata',ryzenstrata:'RYZENStrata'})[inference.engine]);
+  show('kv-cache',inference.kvCache ? 'K '+inference.kvCache.k+' / V '+inference.kvCache.v : null);
   show('context',Number.isSafeInteger(inference.contextWindow) ? t('{n} tokens',{n:count(inference.contextWindow)}) : null);
   show('provider-address',inference.providerAddress);
   show('same-wallet',bool(inference.sameWallet,"Same wallet","Different wallet"));
@@ -105,6 +106,7 @@ function render(data) {
   } else show('percent',null);
   show('work',known ? t('{n} tokens',{n:count(network.epochTokens)+' / '+count(network.epochTarget)}) : "Waiting for verified usage");
   show('network-name',network.name);
+  show('network-stage',network.stage === 'mainnet' ? 'Mainnet' : (network.name ?? 'GPUChain'));
   show('chain-id',network.chainId);
   show('tip',network.tip);
   show('sample-time',t('Updated {time}',{time:time(data.sampledAt,clockFormat)}));

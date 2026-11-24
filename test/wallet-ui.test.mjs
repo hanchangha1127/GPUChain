@@ -55,7 +55,7 @@ test('wallet overview uses local verified balances, provider identity and actual
   assert.deepEqual(result.wallet,{address:data.owner.address,balanceNanocoins:101,nonce:0});
   assert.deepEqual(result.inference,{adapter:'online',nodeRunsInference:false,providerAddress:data.provider.address,
     walletRegistered:false,sameWallet:false,providerRegistered:true,model:MODEL,contextWindow:CONTEXT,
-    busy:true,inferenceActive:false,engine:'strata'});
+    busy:true,inferenceActive:false,engine:'strata',kvCache:null});
   assert.equal(result.network.consensus,'bootstrap');
   assert.equal(result.network.epochTarget,1_000_000_000);
   assert.equal(result.network.registeredProviders,1);

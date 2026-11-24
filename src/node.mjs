@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { addressFromPrivateKey, hash } from './crypto.mjs';
 import { EPOCH_TOKENS, replay } from './ledger.mjs';
+import { bundledMainnetAnchor } from './public-network.mjs';
 
 import { authenticate, nextCheckpoint, verifyAdvance } from './checkpoint.mjs';
 
@@ -43,7 +44,10 @@ export async function readCheckpoint(url, chainId) {
     await res.body?.cancel();
     throw Error('Checkpoint endpoint returned HTTP ' + res.status);
   }
-  return authenticate(await jsonBody(res.body, MAX_CHECKPOINT), chainId);
+  const checkpoint=authenticate(await jsonBody(res.body, MAX_CHECKPOINT), chainId);
+  const launch=bundledMainnetAnchor(chainId);
+  if (launch) verifyAdvance(launch,checkpoint);
+  return checkpoint;
 }
 
 export async function readVerifiedState(url, genesisHash) {

@@ -30,8 +30,9 @@ test('bootstrap completes partially initialized wallets, verifies live model, an
   const dir = await directory(t);
   const user = generateWallet();
   await writeFile(join(dir, 'user.json'), JSON.stringify(user));
-  const modelId = 'qwen3.8-flash-next-local';
+  const modelId = 'qwen3.8-flash-next-iq3_xxs';
   const backend = createServer((req, res) => {
+    if (req.url === '/metrics') return res.end(JSON.stringify({engine:{model:modelId,max_context:262144,kv:'int8',gen:1},live:{}}));
     if (req.url !== '/v1/models') return res.writeHead(404).end();
     res.writeHead(200, {'content-type':'application/json'}).end(JSON.stringify({data:[
       {id:modelId, status:{value:'loaded'}, context_length:262_144}

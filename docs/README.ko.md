@@ -2,13 +2,17 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
-GPUChain은 **개발 중인 실험용 추론 크레딧 네트워크**입니다. RYZENStrata로 Qwen3.8-Flash-Next를 공급하면 추론을 요청한 사용자의 지갑에서 공급자의 지갑으로 코인이 이동합니다. 공급자는 자기 GPU를 끈 뒤에도 받은 코인으로 다른 공급자에게 추론을 요청하거나 다른 지갑에 송금할 수 있습니다. [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+공개 Sites에서 GPUChain 수령 주소를 등록하고 결제 지갑으로 주문에 서명한 뒤 Ethereum USDT 또는 BNB Smart Chain의 Binance-Peg USDT로 결제할 수 있습니다. 판매가는 1 USDT당 10코인(1코인당 0.1 USDT)입니다. 확정된 입금은 Sites가 확인하고 배포 지갑에서 구매자의 지갑으로 지급합니다. [구매 화면](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [결제 기준](usdt-sales.md)
 
-**저장소 URL만 에이전트에 건네면 공개 테스트넷 검증 노드를 백그라운드로 시작합니다.** 직접 설치할 때는 Node.js 24 이상이 있는 PC에서 저장소를 복제하고 `npm start`를 실행하세요. 노드는 첫 실행에 전용 지갑과 데이터베이스를 준비하고, 서명된 체크포인트를 계속 검증해 최신 상태를 저장합니다. 에이전트 작업이나 터미널이 끝난 뒤에도 실행됩니다. GPU·모델 다운로드·공인 IP 없이 참여할 수 있습니다. [에이전트 설치 안내](../AGENTS.md) · [공개 테스트넷 운영 안내](../hosting/sites/README.md)
+GPUChain 공개 메인넷 `gpuchain-mainnet-1`은 소규모로 운영하는 추론 네트워크입니다. 기존 체인에서 서명된 승격 거래로 전환하므로 제네시스 해시, 지갑 주소, 잔액, 거래 순번을 계승합니다. `node src/cli.mjs verify`로 검증된 상태의 `networkStage`가 `mainnet`인지 확인하세요. 기존 설치본과의 호환을 위해 제네시스 파일명 `sites-testnet.json`은 유지합니다.
+
+**저장소 URL만 에이전트에 건네면 공개 메인넷 검증 노드를 백그라운드로 시작합니다.** 직접 설치할 때는 Node.js 24 이상이 있는 PC에서 저장소를 복제하고 `npm start`를 실행하세요. 노드는 첫 실행에 전용 지갑과 데이터베이스를 준비하고, 서명된 체크포인트를 계속 검증해 최신 상태를 저장합니다. 에이전트 작업이나 터미널이 끝난 뒤에도 실행됩니다. GPU·모델 다운로드·공인 IP 없이 참여할 수 있습니다. [에이전트 설치 안내](../AGENTS.md) · [공개 메인넷 운영 안내](../hosting/sites/README.md)
 
 `npm run status`로 로컬 노드의 검증 높이와 투표 여부를 확인합니다. `npm stop`으로 종료하고, `npm start`로 같은 지갑과 DB에서 재개합니다. 접속과 추론 공급자 상태를 한 번만 확인하려면 `npm run join`을 사용하세요.
 
-**지갑 화면 열기** — `npm run gui`를 실행하거나 Windows에서 **GPUChain Wallet.cmd**를 더블클릭하세요. 노드를 시작하거나 실행 중인 노드를 재사용한 뒤 브라우저를 엽니다. 읽기 전용 화면에서 공개 지갑 주소와 검증된 잔액, 노드 동기화와 투표 여부, 로컬 추론 공급 어댑터 상태를 확인할 수 있습니다. 화면은 별도의 루프백 포트로 제공됩니다. 실제 접속 주소는 `node scripts/open-wallet.mjs --print-url`로 확인하세요.
+**지갑 화면 열기** — `npm run gui`를 실행하거나 Windows에서 **GPUChain Wallet.cmd**를 더블클릭하세요. 노드를 시작하거나 실행 중인 노드를 재사용한 뒤 브라우저를 엽니다. 지갑 화면에서 공개 지갑 주소와 검증된 잔액, 노드 동기화와 투표 여부, 로컬 추론 공급 어댑터 상태를 확인할 수 있습니다. 화면은 별도의 루프백 포트로 제공됩니다. 실제 접속 주소는 `node scripts/open-wallet.mjs --print-url`로 확인하세요. 송금하려면 `GPUChain Unlock.cmd` 또는 `npm run wallet:unlock`으로 일회용 코드를 발급받아 로컬 화면에 입력하고, 수취 주소와 정확한 수량을 검토한 뒤 확정하세요.
+
+지갑의 기본 언어는 영어이며 한국어·일본어·중국어 간체·프랑스어로 전환할 수 있습니다. `GPUChain Backup.cmd`에서 암호화 백업을 만든 뒤 파일과 비밀번호를 분리해 보관하세요. 합의에 투표하는 노드는 기존의 최신 DB도 함께 보존해야 합니다. [백업·복구](wallet-backup.md)
 
 ## 원장 검증과 합의 투표
 
@@ -26,7 +30,9 @@ node scripts/bootstrap.mjs
 
 첫 실행 때 `.local`에 세 지갑과 제네시스 파일이 생기고, 요청자 지갑에 로컬 네트워크에서 사용할 1코인이 배정됩니다. 다음 실행부터 기존 지갑과 잔액을 이어 씁니다. 프로그램은 원장(8787)과 공급 어댑터(8789)를 로컬에서 열고 각각의 준비 상태를 출력합니다. 창을 닫거나 Ctrl+C를 누르면 종료됩니다. 지갑 파일에는 개인 키가 있으므로 다른 사람과 공유할 때는 공개 주소와 제네시스 파일만 전달하세요.
 
-실제 추론을 공급하려면 RYZENStrata에 `qwen3.8-flash-next-q2_0` 모델을 262,144토큰 컨텍스트로 로드합니다. 어댑터의 기본 접속 주소는 `http://127.0.0.1:8000/v1`입니다. 이미 설치한 모델을 사용하며, GPUChain 시작 명령에는 모델 다운로드가 없습니다. 구매자와 원장 노드는 모델 파일 없이 사용할 수 있습니다.
+공급 엔진은 `--engine ryzenstrata`(기본) 또는 `--engine strata`로 선택합니다. `provider` 명령과 `scripts/bootstrap.mjs` 모두 이 옵션과 `--strata`, `--model-id`를 지원합니다. RYZENStrata의 기본 모델 ID는 `qwen3.8-flash-next-q2_0`입니다. 원본 Strata는 조건에 맞는 로드된 모델이 하나면 자동으로 선택하며 여러 개면 모델 ID를 지정해야 합니다. 지원 모델은 **Qwen3.8-Flash-Next**와 해당 가중치의 호환 양자화본으로 한정됩니다. 컨텍스트는 **262,144토큰(256K) 이상**이어야 하고 실행 중인 **K와 V 캐시 각각 Q8 이상**이어야 합니다. Q2_0 가중치와 Q8 KV 캐시를 함께 쓸 수 있습니다. 추론 전과 영수증 서명 전에 엔진 `/metrics`로 실행 모델·컨텍스트·KV 형식을 확인합니다. [원본 Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+
+구매자는 `node src/cli.mjs chat`으로 원장과 선택된 공급자에 아웃바운드 HTTPS(통상 443번)로 접속합니다. 일반 사용자 PC에서 LAN에 여는 OpenAI 호환 소비자 게이트웨이는 제공하지 않습니다. 공급자는 공개 HTTPS 프록시를 로컬 어댑터의 8789번 포트로 연결합니다. 어댑터는 기본적으로 공급자 PC의 `http://127.0.0.1:8000/v1` 추론 백엔드를 호출합니다.
 
 공급자가 준비되면 두 번째 PowerShell 창에서 다음처럼 실행합니다.
 

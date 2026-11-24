@@ -4,6 +4,7 @@ import { authenticate, verifyAdvance } from './checkpoint.mjs';
 import { addressFromPrivateKey, hash, sign } from './crypto.mjs';
 import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
 import { submitSignedTransaction } from './submit-transaction.mjs';
+import { spendableBalance } from './ledger.mjs';
 
 const PAIR_MS=120_000, SESSION_MS=300_000;
 const token=()=>randomBytes(32).toString('hex');
@@ -56,8 +57,8 @@ export function createWalletSender({wallet,pin=publicGenesis.hash,resolveLedger=
   }
   function nextNonce(state,amount) {
     expect(state.saleMandate?.authority!==wallet.address,403,'INVALID_INPUT','Dedicated sale signer cannot transfer funds');
-    expect(decodeAmount(state.balances[wallet.address] ?? 0)>=decodeAmount(amount),
-      409,'INSUFFICIENT_FUNDS','Insufficient verified balance');
+    expect(spendableBalance(state,wallet.address)>=decodeAmount(amount),
+      409,'INSUFFICIENT_FUNDS','Insufficient unreserved verified balance');
     const nonce=(state.nonces[wallet.address] ?? 0)+1;
     expect(Number.isSafeInteger(nonce),409,'STATE_CHANGED','Wallet nonce is out of range');
     return nonce;

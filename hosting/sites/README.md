@@ -1,6 +1,6 @@
-# GPUChain public testnet
+# GPUChain public mainnet operations
 
-The public network is identified by its pinned genesis. Sites hosts its initial sequencer. Three eligible, independently operated validators can automatically take over the same chain. GPU providers connect separately. [Initial Sites sequencer](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site) · [Ledger endpoint directory](../../networks/testnet-endpoints.json)
+The public network is identified by its pinned genesis. Sites hosts its initial sequencer. Three eligible, independently operated validators can automatically take over the same chain. GPU providers connect separately. [Initial Sites sequencer](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/ledger) · [Ledger endpoint directory](../../networks/testnet-endpoints.json)
 
 Use Node.js 24 or later. Run these commands from the GPUChain repository root:
 
@@ -12,7 +12,11 @@ node src/cli.mjs status
 node src/cli.mjs routes
 ~~~
 
-The pinned genesis hash is `a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460`. The genesis allocates one test coin to the operator's test wallet and starts with zero providers. A new client can check the network immediately. To serve inference, the operator registers a provider address and its HTTPS origin. A funded requester can then use `chat` with the same ledger and genesis options. The client selects the lowest measured latency among available candidates. An empty route list means the probe found no ready inference provider. [Genesis file](../../networks/sites-testnet.json) · [Provider and wallet commands](../../README.md)
+The pinned genesis hash is `a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460`. The genesis allocates one coin to the operator's wallet and starts with zero providers. A new client can check the network immediately. To serve inference, the operator registers a provider address and its HTTPS origin. A funded requester can then use `chat` with the same ledger and genesis options. The client selects the lowest measured latency among available candidates. An empty route list means the probe found no ready inference provider. [Genesis file](../../networks/sites-testnet.json) · [Provider and wallet commands](../../README.md)
+
+The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-place promotion keeps the original genesis hash, wallet addresses, balances and transaction nonces. Existing bootstrap and genesis filenames retain `testnet` for compatibility. Check the signed network state with `node src/cli.mjs verify`: the promoted checkpoint has `networkStage` equal to `mainnet`.
+
+The bootstrap operator authorizes public providers and validator candidates. An activated committee requires two of three distinct durable voters to confirm writes. The hosted store can offer 10 coins per USDT when live inventory, the reserve mandate and the two independent payment readers for the chosen chain are available. [Sale availability and payment instructions](../../docs/usdt-sales.md)
 
 ## Hosted state
 

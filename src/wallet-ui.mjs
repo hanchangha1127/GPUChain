@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { CONTEXT, EPOCH_TOKENS, MODEL, RATES } from './ledger.mjs';
 import { isAmount } from './amount.mjs';
+import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 import { requestJson } from './http.mjs';
 
 const assets = [
@@ -72,7 +73,7 @@ function overview({status, checkpoint}, sampled) {
     nodeRunsInference:false,
     walletRegistered:state ? state.providers.includes(address) : null,
     adapter:sampled.adapter ?? 'incompatible', providerAddress:null, sameWallet:null,
-    providerRegistered:null, busy:null, inferenceActive:null, engine:null, model:null, contextWindow:null,
+    providerRegistered:null, busy:null, inferenceActive:null, engine:null, kvCache:null, model:null, contextWindow:null,
   };
   const info = sampled.info;
   if (hex64(info?.provider) && hex64(info.chainId)) {
@@ -84,6 +85,7 @@ function overview({status, checkpoint}, sampled) {
         busy:typeof info.busy === 'boolean' ? info.busy : null,
         inferenceActive:typeof info.inferenceActive === 'boolean' ? info.inferenceActive : null,
         engine:['strata','ryzenstrata'].includes(info.engine) ? info.engine : null,
+        kvCache:kvCacheAtLeastQ8(info.kvCache) ? {k:info.kvCache.k,v:info.kvCache.v} : null,
         model:MODEL,contextWindow:CONTEXT,
       });
     }
@@ -101,7 +103,8 @@ function overview({status, checkpoint}, sampled) {
       syncError:status.syncError ? 'Checkpoint synchronization failed' : null,
     },
     network:{
-      name:state?.networkId ?? null,chainId:status.chainId,tip:state?.tip ?? null,height:state?.height ?? null,
+      name:state?.networkId ?? null,stage:state?.networkStage ?? null,
+      chainId:status.chainId,tip:state?.tip ?? null,height:state?.height ?? null,
       epoch:state?.epoch ?? null,epochTokens:state?.epochTokens ?? null,totalWorkTokens:state?.totalWorkTokens ?? null,
       epochTarget:EPOCH_TOKENS,registeredProviders:state?.providers.length ?? null,
       consensus:state ? (checkpoint.authority ? 'quorum' : 'bootstrap') : null,ratesNanoPerToken:RATES,

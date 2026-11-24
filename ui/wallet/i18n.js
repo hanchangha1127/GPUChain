@@ -1,6 +1,8 @@
 // English message keys are the fallback; translations follow the selector order.
 export const locales = ['en','ko','ja','zh-CN','fr'];
 const messages = {
+  "Mainnet":["메인넷","メインネット","主网","Réseau principal"],
+  "KV cache precision":["KV 캐시 정밀도","KV キャッシュ精度","KV 缓存精度","Précision du cache KV"],
   "Inference engine":["추론 엔진","推論エンジン","推理引擎","Moteur d’inférence"],
   "Back up or restore this wallet":["지갑 백업 및 복원","ウォレットのバックアップと復元","备份或恢复钱包","Sauvegarder ou restaurer ce portefeuille"],
   "Open the backup helper in your GPUChain folder. Choose a password locally and store the encrypted file separately.":["GPUChain 폴더의 백업 도구를 여세요. 이 PC에서 비밀번호를 정하고 암호화된 파일을 별도로 보관하세요.","GPUChain フォルダーのバックアップツールを開いてください。この端末でパスワードを設定し、暗号化ファイルを別の場所に保管してください。","打开 GPUChain 文件夹中的备份工具。在本机设置密码，并单独保存加密文件。","Ouvrez l’outil de sauvegarde dans votre dossier GPUChain. Choisissez un mot de passe sur cet appareil et conservez le fichier chiffré séparément."],

@@ -95,6 +95,9 @@ export function verifyConsensusCheckpoint(head,chainId) {
     'Invalid certified checkpoint fields');
   verifySnapshotIdentity(head,chainId);
   const p = verifyActivation(head.authority,head.genesis);
+  if (head.state.mainnetPromotion && head.state.mainnetPromotion.payload.anchorHeight >= p.anchorHeight) {
+    throw Error('Mainnet promotion must precede validator activation');
+  }
   if (head.consensus === null) {
     const {authority,consensus,...legacy} = head;
     activateCheckpoint(legacy,authority);

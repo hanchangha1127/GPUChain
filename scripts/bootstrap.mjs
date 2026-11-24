@@ -120,7 +120,9 @@ function portNumber(value, name) {
 
 /** Start a loopback network and return public service details and an idempotent shutdown function. */
 export async function startLocal({dir = '.local', nodePort = 8787, providerPort = 8789,
-  strataUrl = DEFAULT_STRATA, modelId = DEFAULT_MODEL} = {}) {
+  strataUrl = DEFAULT_STRATA, engine = 'ryzenstrata', modelId} = {}) {
+  if (!['strata','ryzenstrata'].includes(engine)) throw Error('Expected --engine strata or ryzenstrata');
+  modelId ??= engine === 'ryzenstrata' ? DEFAULT_MODEL : undefined;
   if (Number(process.versions.node.split('.')[0]) < 24) throw Error('GPUChain requires Node.js 24 or newer');
   dir = resolve(dir);
   nodePort = portNumber(nodePort, '--node-port');
@@ -144,7 +146,7 @@ export async function startLocal({dir = '.local', nodePort = 8787, providerPort 
     const markerPath = join(dir, '.bootstrap.json');
     if (!marker) await writeJson(markerPath, {chainId: state.chainId});
     server = createProviderServer({wallet: provider, chainId: state.chainId, ledgerUrl: node.url,
-      strataUrl, modelId, apiKey: process.env.STRATA_API_KEY});
+      strataUrl, engine, modelId, apiKey: process.env.STRATA_API_KEY});
     server.listen(providerPort, '127.0.0.1');
     await once(server, 'listening');
     const providerUrl = 'http://127.0.0.1:' + server.address().port;
@@ -165,13 +167,14 @@ export async function startLocal({dir = '.local', nodePort = 8787, providerPort 
     let providerDetail;
     try {
       const info = await requestJson(providerUrl + '/v1/info', {timeoutMs: 12_000});
-      if (info.provider !== provider.address || info.chainId !== state.chainId || info.backendModel !== modelId) {
+      if (info.provider !== provider.address || info.chainId !== state.chainId ||
+          info.engine !== engine || !info.backendModel || (modelId && info.backendModel !== modelId)) {
         throw Error('Unexpected provider profile');
       }
       providerReady = true;
-      providerDetail = 'RYZENStrata model loaded with a 256K context window.';
+      providerDetail = info.backendModel+' loaded with a 256K context window.';
     } catch (err) {
-      providerDetail = err.message + '. Start RYZENStrata with ' + modelId +
+      providerDetail = err.message + '. Start '+engine+' with ' + (modelId ?? 'Qwen3.8-Flash-Next') +
         ' at 262144 context tokens; check --strata, --model-id and STRATA_API_KEY, then retry GET ' +
         providerUrl + '/v1/info.';
     }
@@ -187,15 +190,15 @@ export async function startLocal({dir = '.local', nodePort = 8787, providerPort 
 async function main() {
   const {values} = parseArgs({options: {
     dir: {type:'string'}, 'node-port': {type:'string'}, 'provider-port': {type:'string'},
-    strata: {type:'string'}, 'model-id': {type:'string'}, help: {type:'boolean', short:'h'},
+    strata: {type:'string'}, engine:{type:'string'}, 'model-id': {type:'string'}, help: {type:'boolean', short:'h'},
   }});
   if (values.help) {
     console.log('node scripts/bootstrap.mjs [--dir .local] [--node-port 8787] [--provider-port 8789]' +
-      ' [--strata ' + DEFAULT_STRATA + '] [--model-id ' + DEFAULT_MODEL + ']');
+      ' [--engine ryzenstrata|strata] [--strata ' + DEFAULT_STRATA + '] [--model-id ID]');
     return;
   }
   const app = await startLocal({dir: values.dir, nodePort: values['node-port'],
-    providerPort: values['provider-port'], strataUrl: values.strata, modelId: values['model-id']});
+    providerPort: values['provider-port'], strataUrl: values.strata, engine:values.engine, modelId: values['model-id']});
   const stop = () => app.close().catch(err => { console.error(err.message); process.exitCode = 1; });
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);

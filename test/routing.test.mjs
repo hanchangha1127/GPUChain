@@ -24,6 +24,7 @@ test('RTT probes rank ready 256K providers and check capacity without running in
   const modelId = 'qwen3.8-flash-next-q2_0';
   const backend = await listen(t, http.createServer((req, res) => {
     calls.push(req.url);
+    if (req.url === '/metrics') return res.end(JSON.stringify({engine:{model:modelId,max_context:CONTEXT,kv:'int8',gen:1},live:{}}));
     res.end(JSON.stringify({data:[{id:modelId, context_length:CONTEXT, status:{value:'loaded'},
       limit:{output:8192}}]}));
   }));
@@ -53,7 +54,7 @@ test('RTT probes rank ready 256K providers and check capacity without running in
   assert.ok(ranked[1].latencyMs >= 60);
   assert.equal(probes, 3);
   assert.deepEqual(await rankProviders(state, {ledgerUrl, maxOutputTokens:8193}), []);
-  assert.ok(calls.length > 0 && calls.every(path => path === '/v1/models'));
+  assert.ok(calls.includes('/metrics') && calls.every(path => ['/metrics','/v1/models'].includes(path)));
 });
 
 test('probes reject stale challenges, wrong keys and chains, busy or incompatible responses', async t => {
@@ -64,7 +65,7 @@ test('probes reject stale challenges, wrong keys and chains, busy or incompatibl
   const url = await listen(t, http.createServer((req, res) => {
     const challenge = new URL(req.url, ledgerUrl).searchParams.get('challenge');
     const payload = {domain:'gpuchain/provider-probe/v1', provider:wallet.address, chainId, challenge,
-      available:true, model:MODEL, contextWindow:CONTEXT, maxOutputTokens:2048};
+      available:true, model:MODEL, contextWindow:CONTEXT, kvCache:{k:'Q8',v:'Q8'}, maxOutputTokens:2048};
     const answer = alter(payload);
     res.end(JSON.stringify(answer));
   }));
@@ -72,7 +73,8 @@ test('probes reject stale challenges, wrong keys and chains, busy or incompatibl
   const signed = (payload, signer = wallet) => ({payload, signature:sign(signer.privateKey, payload)});
   for (const fields of [
     {challenge:'0'.repeat(32)}, {available:false}, {chainId:hash('another genesis')},
-    {model:'other model'}, {contextWindow:65536}, {maxOutputTokens:5}, {domain:'other-protocol'}
+    {model:'other model'}, {contextWindow:65536}, {maxOutputTokens:5}, {domain:'other-protocol'},
+    {kvCache:{k:'Q8',v:'Q4'}}, {kvCache:null}
   ]) {
     alter = payload => signed({...payload,...fields});
     assert.deepEqual(await rankProviders(state, {ledgerUrl,maxOutputTokens:32}), []);

@@ -2,13 +2,15 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
-GPUChain est un **réseau expérimental de crédits d’inférence, encore en développement**, pour Qwen3.8-Flash-Next. En exécutant RYZENStrata sur votre matériel, vous gagnez des crédits lorsque vous traitez les requêtes d’autres utilisateurs. Vous pouvez ensuite transférer ces crédits ou les dépenser auprès d’un autre fournisseur, même si votre GPU est éteint. Le réseau public commence avec un séquenceur hébergé par Sites, puis peut passer automatiquement à un comité de validateurs. [Projet RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+Le réseau principal public `gpuchain-mainnet-1` est exploité à l’échelle d’un projet pilote. Sa promotion signée conserve le hachage de genèse, les portefeuilles, les soldes et les numéros de séquence initiaux. Exécutez `node src/cli.mjs verify` pour vérifier que `networkStage` vaut `mainnet`. Le fichier de genèse conserve son nom historique `sites-testnet.json` pour les clients existants.
 
-**Transmettez l’URL de ce dépôt à un agent pour lancer un nœud de vérification du réseau de test public en arrière-plan.** Vous pouvez aussi cloner le dépôt et exécuter `npm start` avec Node.js 24 ou une version ultérieure. Le nœud crée ou réutilise son portefeuille et sa base de données, vérifie régulièrement les points de contrôle signés et conserve le dernier état vérifié. Il continue de fonctionner après la fermeture du terminal ou de la session de l’agent. Cette participation fonctionne sans GPU, sans téléchargement de modèle et sans adresse IP publique. [Guide pour les agents](../AGENTS.md) · [Exploitation du réseau de test](../hosting/sites/README.md)
+**Transmettez l’URL de ce dépôt à un agent pour lancer un nœud de vérification du réseau principal public en arrière-plan.** Vous pouvez aussi cloner le dépôt et exécuter `npm start` avec Node.js 24 ou une version ultérieure. Le nœud crée ou réutilise son portefeuille et sa base de données, vérifie régulièrement les points de contrôle signés et conserve le dernier état vérifié. Il continue de fonctionner après la fermeture du terminal ou de la session de l’agent. Cette participation fonctionne sans GPU, sans téléchargement de modèle et sans adresse IP publique. [Guide pour les agents](../AGENTS.md) · [Exploitation du réseau principal](../hosting/sites/README.md)
 
 Utilisez `npm run status` pour consulter la hauteur vérifiée et le statut de vote du nœud local. `npm stop` l’arrête et `npm start` le relance avec les mêmes données. Pour vérifier ponctuellement la connexion et les fournisseurs d’inférence, utilisez `npm run join`.
 
-**Ouvrir le portefeuille.** Exécutez `npm run gui`, ou double-cliquez sur **GPUChain Wallet.cmd** sous Windows. Le lanceur démarre le nœud ou réutilise l’instance existante, puis ouvre le navigateur. Le tableau de bord en lecture seule affiche l’adresse publique, le solde du dernier point de contrôle vérifié, la synchronisation et le statut de vote du nœud, ainsi que l’état de l’adaptateur d’inférence local. L’interface écoute sur un port de bouclage distinct. La commande `node scripts/open-wallet.mjs --print-url` affiche son URL.
+**Ouvrir le portefeuille.** Exécutez `npm run gui`, ou double-cliquez sur **GPUChain Wallet.cmd** sous Windows. Le lanceur démarre le nœud ou réutilise l’instance existante, puis ouvre le navigateur. Le tableau de bord local affiche l’adresse publique, le solde du dernier point de contrôle vérifié, la synchronisation et le statut de vote du nœud, ainsi que l’état de l’adaptateur d’inférence local. L’interface écoute sur un port de bouclage distinct. La commande `node scripts/open-wallet.mjs --print-url` affiche son URL. Pour envoyer des coins, ouvrez `GPUChain Unlock.cmd` ou lancez `npm run wallet:unlock`, saisissez le code à usage unique sur ce PC, puis vérifiez le destinataire et le montant avant de confirmer.
+
+Le portefeuille s’ouvre en anglais et propose cinq langues, dont le français. Utilisez `GPUChain Backup.cmd` pour créer une sauvegarde chiffrée et conservez le mot de passe de restauration séparément. La boutique publique vend 10 coins pour 1 USDT. Enregistrez l’adresse de réception GPUChain avant le paiement. [Guide d’achat](usdt-sales.md) · [Sauvegarde et restauration](wallet-backup.md)
 
 ## Vérification du registre et vote
 
@@ -18,7 +20,7 @@ Sites vérifie les signatures, les adresses et les identifiants de base de trois
 
 ## Tarification et changement d’époque
 
-Chaque fournisseur doit offrir une **fenêtre de contexte de 256 K (262 144 tokens)**. L’adaptateur vérifie le modèle chargé et la capacité annoncée par RYZENStrata. La somme des plafonds d’entrée et de sortie signés pour une requête doit tenir dans cette fenêtre. La facturation se fonde sur les tokens effectivement traités.
+Le fournisseur doit charger **Qwen3.8-Flash-Next**, y compris une quantification compatible de ces poids, avec un contexte d’au moins **262 144 tokens (256K)**. Les caches K et V actifs doivent **chacun avoir une précision Q8 ou supérieure**. Des poids Q2_0 peuvent être utilisés avec un cache KV Q8. L’adaptateur vérifie le modèle, le contexte et le format du cache renvoyés par `/metrics` avant la génération et avant de signer le reçu.
 
 | Usage | Crédits par million de tokens | Pris en compte pour l’époque |
 | --- | ---: | --- |
@@ -34,7 +36,7 @@ Une époque se termine chaque fois que les fournisseurs cumulent ensemble **un m
 
 Pour créer votre réseau local, exécutez `node scripts/bootstrap.mjs`. Les commandes suivantes permettent aussi de démarrer chaque rôle séparément.
 
-Utilisez Node.js 24 ou une version ultérieure. Exécutez les commandes PowerShell depuis la racine du dépôt. Le registre, les portefeuilles, le client et l’adaptateur utilisent les modules intégrés de Node.js. Le fournisseur doit disposer d’une instance RYZENStrata en cours d’exécution, avec le modèle chargé et la route `/v1/models` accessible. L’adresse par défaut du moteur est `http://127.0.0.1:8000/v1` et l’identifiant du modèle est `qwen3.8-flash-next-q2_0`. Les options `--strata` et `--model-id` permettent de les adapter à votre installation. Si le moteur exige une clé, définissez `STRATA_API_KEY` dans l’environnement du fournisseur.
+Utilisez Node.js 24 ou plus récent. Le fournisseur choisit `--engine ryzenstrata` (par défaut) ou `--engine strata` dans la commande `provider` ou dans `scripts/bootstrap.mjs`. Le modèle RYZENStrata par défaut est `qwen3.8-flash-next-q2_0`. Strata sélectionne le seul modèle chargé admissible. S’il y en a plusieurs, précisez `--model-id`. Configurez l’URL du moteur avec `--strata` et son authentification avec `STRATA_API_KEY`. Le proxy HTTPS public transmet à l’adaptateur local sur le port 8789. Celui-ci appelle son moteur privé, par défaut sur `http://127.0.0.1:8000/v1`. Le demandeur utilise `chat` et des connexions HTTPS sortantes (port 443 en général). Le client ne fournit pas de passerelle OpenAI pour le réseau local. [Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
 **Pour une installation manuelle, créez le réseau et démarrez le séquenceur dans le terminal 1.** Créez les portefeuilles et le fichier de genèse une seule fois, dans un répertoire `.local` neuf. L’exemple attribue un crédit au demandeur. Chaque fichier de portefeuille contient une clé privée. Sur plusieurs machines, chaque participant conserve son propre portefeuille. Si vous avez déjà exécuté le script de démarrage, passez directement aux commandes du client dans le terminal 3.
 
@@ -90,7 +92,7 @@ La commande `node src/cli.mjs routes --genesis .local/genesis.json` classe les f
 
 ## Vérification, conservation des données et confiance
 
-Le demandeur signe notamment l’adresse du fournisseur, l’empreinte de la question, le numéro de séquence et les plafonds de tokens. Le fournisseur vérifie le solde du demandeur avant de transmettre sa question à RYZENStrata. Son reçu signé associe la requête, la réponse et les mesures d’utilisation. Le client contrôle ces éléments, contresigne le reçu et le soumet au séquenceur. Les portefeuilles et le séquenceur signent avec Ed25519.
+Le demandeur signe notamment l’adresse du fournisseur, l’empreinte de la question, le numéro de séquence et les plafonds de tokens. Le fournisseur vérifie le solde du demandeur avant de transmettre sa question au moteur Strata choisi. Son reçu signé associe la requête, la réponse et les mesures d’utilisation. Le client contrôle ces éléments, contresigne le reçu et le soumet au séquenceur. Les portefeuilles et le séquenceur signent avec Ed25519.
 
 Le séquenceur vérifie la dépense et met à jour SQLite dans une transaction atomique. La base conserve les derniers soldes, numéros de séquence, paramètres et compteurs, l’empreinte du dernier bloc, ainsi qu’une empreinte de 32 octets par époque terminée. Les détails des transactions et les reçus individuels servent uniquement au traitement en cours. Le fournisseur reçoit la question en clair et garde brièvement en mémoire sa dernière réponse pour permettre une nouvelle tentative.
 

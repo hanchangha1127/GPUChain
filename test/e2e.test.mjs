@@ -72,6 +72,7 @@ test('CLI settles a Strata completion, transfers credits, verifies a follower an
     await run(...register,'seq.json');
     await assert.rejects(run(...register,'seq.json'),/already registered/);
     const strata = await serve((path,body) => {
+      if (path === '/metrics') return {engine:{model,max_context:262144,kv:'int8',gen:1},live:{}};
       if (path === '/v1/models') return {data:[{id:model,status:{value:'loaded'},context_length:262144}]};
       if (path === '/v1/messages/count_tokens') return {input_tokens:64};
       assert.equal(path,'/v1/chat/completions');
@@ -111,6 +112,7 @@ test('CLI settles a Strata completion, transfers credits, verifies a follower an
 
     // An intermediary alters the assistant answer after the real provider signed its receipt.
     const alteringProxy = await serve(async (path,body) => {
+      if (path.startsWith('/v1/probe?')) return (await fetch(worker+path)).json();
       const res = await fetch(worker + path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
       assert.ok(res.ok);
       const reply = await res.json();

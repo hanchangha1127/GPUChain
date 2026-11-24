@@ -4,6 +4,7 @@ import { verify } from './crypto.mjs';
 import { requestJson } from './http.mjs';
 import { CONTEXT, MODEL } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
+import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 
 export const PROBE_DOMAIN = 'gpuchain/provider-probe/v1';
 const CONCURRENCY = 8;
@@ -11,7 +12,7 @@ const TIMEOUT_MS = 900;
 const BUDGET_MS = 3000;
 const MAX_CANDIDATES = 64;
 
-async function sample(candidate, chainId, minOutput) {
+export async function probeProvider(candidate, chainId, minOutput) {
   const challenge = randomBytes(16).toString('hex');
   const started = performance.now();
   const {payload, signature} = await requestJson(candidate.url + '/v1/probe?challenge=' + challenge,
@@ -19,6 +20,7 @@ async function sample(candidate, chainId, minOutput) {
   const elapsed = performance.now() - started;
   if (payload?.domain !== PROBE_DOMAIN || payload.challenge !== challenge || payload.chainId !== chainId ||
       payload.provider !== candidate.provider || payload.model !== MODEL || payload.contextWindow !== CONTEXT ||
+      !kvCacheAtLeastQ8(payload.kvCache) ||
       payload.available !== true || !Number.isSafeInteger(payload.maxOutputTokens) ||
       payload.maxOutputTokens < minOutput || payload.maxOutputTokens > CONTEXT ||
       !verify(candidate.provider, payload, signature)) {
@@ -55,7 +57,7 @@ export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 
       while (next < ready.length && performance.now() + TIMEOUT_MS <= deadline) {
         const candidate = ready[next++];
         try {
-          candidate.samples.push(await sample(candidate, state.chainId, maxOutputTokens));
+          candidate.samples.push(await probeProvider(candidate, state.chainId, maxOutputTokens));
         } catch {
           // An unreachable, busy or ineligible node loses its earlier measurements.
           candidate.samples.length = 0;

@@ -1,5 +1,6 @@
 import { hash, sign, verify } from './crypto.mjs';
-import { canValidate } from './ledger.mjs';
+import { SALE_TERMS } from './sale-policy.mjs';
+import { canValidate, MAINNET } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
 
 const MAX_AGE_MS = 120_000;
@@ -103,13 +104,19 @@ export async function limitedJson(response,byteLimit) {
   return JSON.parse(new TextDecoder().decode(merged));
 }
 
-export async function checkReadiness(candidate, fetchReady = fetch) {
+export async function checkReadiness(candidate, fetchReady = fetch, exactMoney = false, mainnet = false) {
   const challenge = globalThis.crypto.randomUUID().replaceAll('-','');
-  const response = await fetchReady(candidate.origin + '/v1/consensus/ready?challenge=' + challenge,
-    {redirect:'error',signal:AbortSignal.timeout(3000)});
+  const response = await fetchReady(candidate.origin + '/v1/consensus/ready?challenge=' + challenge +
+    (exactMoney?'&money=exact':'') + (mainnet?'&stage=mainnet':''),
+    {redirect:'manual',signal:AbortSignal.timeout(3000)});
   const {payload,signature} = await limitedJson(response,4096);
   const expected = {domain:'gpuchain/validator-ready/v1',chainId:candidate.chainId,
     address:candidate.address,origin:candidate.origin,instanceId:candidate.instanceId,challenge};
+  if (exactMoney) {
+    expected.moneyCodec='nanocoin-decimal-v1';
+    expected.saleEscrow=SALE_TERMS;
+  }
+  if (mainnet) expected.validatorProtocol=MAINNET.validatorProtocol;
   if (hash(expected) !== hash(payload) || !verify(candidate.address,expected,signature)) {
     throw Error('Validator did not prove readiness at its announced origin');
   }

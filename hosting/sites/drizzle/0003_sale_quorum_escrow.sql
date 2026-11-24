@@ -1,0 +1,1 @@
+ALTER TABLE `sale_orders` ADD `quorum_hold` integer DEFAULT 0 NOT NULL;
