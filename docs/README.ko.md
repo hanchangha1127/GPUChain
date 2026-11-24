@@ -32,7 +32,7 @@ OpenCode를 다시 열고 `/models`에서 `gpuchain/qwen3.8-flash-next`를 선�
 opencode run --model "gpuchain/qwen3.8-flash-next#high" "이 변경 사항을 검토해 줘."
 ~~~
 
-선택한 값은 요청의 `reasoning_effort`로 전달됩니다. 생각에 사용할 토큰 수를 제한하려면 GPUChain 모델의 `variants`에 `{"id":"high-512","body":{"reasoning_effort":"high","reasoning_budget_tokens":512}}`를 추가하고 `#high-512`로 선택하세요. API를 직접 사용할 때도 같은 두 필드를 요청에 넣을 수 있습니다. 생각 토큰과 답변 토큰은 하나의 출력 한도를 공유하며 OpenCode의 기본 출력 한도는 4,096입니다. 생각 예산의 범위는 0부터 요청의 `max_tokens`까지입니다. 0은 별도의 생각 토큰 상한을 해제하며, `none`으로 생각을 끌 때는 예산을 생략하거나 0으로 설정하세요. [OpenCode 모델 변형 안내](https://opencode.ai/docs/models/#variants)
+선택한 값은 요청의 `reasoning_effort`로 전달됩니다. 생각 토큰 예산을 지정하려면 GPUChain 모델의 `variants`에 `{"id":"high-512","body":{"reasoning_effort":"high","reasoning_budget_tokens":512}}`를 추가하고 `#high-512`로 선택하세요. API를 직접 사용할 때도 같은 두 필드를 요청에 넣을 수 있습니다. 생각 토큰과 답변 토큰은 하나의 출력 한도를 공유하며 OpenCode의 기본 출력 한도는 4,096입니다. 생각 예산의 범위는 0부터 요청의 `max_tokens`까지입니다. RYZENStrata는 양수 예산에 도달하면 생각을 마무리하기 시작하며, 마무리 문구도 생각 토큰으로 계량할 수 있습니다. 0은 별도의 생각 예산을 해제합니다. `none`으로 생각을 끌 때는 예산을 생략하거나 0으로 설정하세요. [OpenCode 모델 변형 안내](https://opencode.ai/docs/models/#variants)
 
 **공개 릴레이를 직접 지정해 확인하려면** 요청자 PC의 PowerShell에서 아래 명령을 사용하세요. 출력된 공개 주소가 코인을 충전한 지갑인지 확인한 뒤 마지막 유료 추론 명령을 실행하세요. 아래 명령에서 `--ledger $ledger`를 생략하면 현재 공개 원장을 자동으로 탐색합니다.
 
@@ -70,7 +70,7 @@ node scripts/bootstrap.mjs
 
 원장에 등록된 공급자는 아웃바운드 HTTPS(보통 443번)를 쓰는 암호화 릴레이로 유료 추론을 제공할 수 있습니다. 공급자 PC의 포트 개방·터널·검증기 공개 주소·위원회 투표권은 필요하지 않습니다. 운영 시퀀서가 거래를 확정하는 동안에도 실제로 처리하고 요청자와 정산한 작업에서 코인을 받습니다. 검증기 3대의 위원회 구성은 별도 절차입니다. `routes --transport relay`로 공급 상태를 확인하고, `chat --transport auto`는 적격 직접 연결 후 릴레이 순으로 선택합니다. 직접 연결을 운영하려면 공개 HTTPS를 8789번에 전달하고 그 주소를 등록합니다. `GPUCHAIN_INFERENCE_RELAY=0`은 릴레이만 끕니다. 릴레이의 요청·응답은 각각 암호화 전 JSON 최대 8 MiB입니다.
 
-요청자는 `--reasoning-effort none|low|medium|high`로 추론 강도를 정합니다. `max`와 `xhigh`는 `high`로 처리합니다. `--reasoning-budget-tokens N`의 범위는 0부터 `--max-output`까지입니다. 0은 엔진의 별도 사고 토큰 한도를 해제합니다. 사고를 끄려면 `none`을 쓰고 예산은 생략하거나 0으로 지정하세요. 두 옵션을 생략하면 엔진 기본 설정을 씁니다. 사고 토큰은 최대 출력 한도에 포함되고 출력 사용량으로 한 번만 정산됩니다.
+요청자는 `--reasoning-effort none|low|medium|high`로 추론 강도를 정합니다. `max`와 `xhigh`는 `high`로 처리합니다. `--reasoning-budget-tokens N`의 범위는 0부터 `--max-output`까지입니다. RYZENStrata는 양수 예산에 도달하면 생각을 마무리하기 시작하며, 마무리 문구도 생각 토큰으로 계량할 수 있습니다. 0은 별도의 생각 예산을 해제합니다. 사고를 끄려면 `none`을 쓰고 예산은 생략하거나 0으로 지정하세요. 두 옵션을 생략하면 엔진 기본 설정을 씁니다. 사고 토큰은 최대 출력 한도에 포함되고 출력 사용량으로 한 번만 정산됩니다.
 
 ~~~powershell
 node src/cli.mjs chat --wallet user.wallet.json --text "두 방법을 비교해 줘." --max-input 1024 --max-output 512 --reasoning-effort high --reasoning-budget-tokens 256
