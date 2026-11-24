@@ -1,0 +1,9 @@
+.local/
+*.sqlite
+*.sqlite-*
+*.wallet.json
+.env
+.env.*
+node_modules/
+*.log
+*.gguf
