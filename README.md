@@ -8,6 +8,8 @@ GPUChain is an **experimental, unfinished inference-credit network** for Qwen3.8
 
 Run `npm run status` to see the local node's verified height and voting status. `npm stop` stops it and `npm start` resumes it with the same data. `npm run join` performs a single connectivity and provider check. Use `node scripts/bootstrap.mjs` only to create an independent local development network.
 
+**Open the wallet.** Run `npm run gui`, or double-click **GPUChain Wallet.cmd** on Windows. It starts or reuses the participant and opens the read-only dashboard in your browser. The dashboard shows the public wallet address and balance from its verified checkpoint, node synchronization and voting status, and the status of the local inference provider adapter. The interface listens on a separate loopback port. To print its actual URL, run `node scripts/open-wallet.mjs --print-url`.
+
 ## Verification and voting
 
 Every default node verifies checkpoints. To enter the voting committee, it also needs an authorized wallet and its own reachable HTTPS origin. The operator can authorize the node's public address with `add-validator`; existing registered provider wallets are also eligible. Configure `GPUCHAIN_VALIDATOR_ORIGIN` to point at its listener (loopback port 8790 by default), then restart the node. Keep its wallet and database together in the persistent participant directory (`~/.gpuchain/participant` by default).

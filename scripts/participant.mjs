@@ -83,7 +83,7 @@ async function daemon() {
     if (!s.chainId || !s.address || !s.instanceId) throw Error('Local validator identity unavailable');
     // Return local status only. The complete provider registry may be large.
     const {providers,...summary} = s;
-    return {...summary,running:true,url:node.url,pid:process.pid};
+    return {...summary,running:true,url:node.url,guiUrl:node.guiUrl,pid:process.pid};
   }
 
   const server = createServer(async (req,res) => {

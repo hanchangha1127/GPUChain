@@ -87,6 +87,7 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
     timeoutMs <= 2147483647, 400, 'Invalid chain ID or timeout');
   const seen = new Map();
   let busy = false;
+  let inferenceActive = false;
   // Cache only the latest response so a dropped connection can be retried without retaining every chat.
   let previous;
   let clearPrevious;
@@ -165,8 +166,14 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
       requireValue(estimate.input_tokens <= request.maxInputTokens, 400, 'Prompt exceeds signed input budget');
     }
     requireValue(request.expiresAt > Date.now(), 400, 'Request expired before inference');
-    const answer = await backend('/chat/completions', { model: modelId, messages,
-      max_tokens: request.maxOutputTokens, stream: false }, timeoutMs);
+    inferenceActive = true;
+    let answer;
+    try {
+      answer = await backend('/chat/completions', {model:modelId,messages,
+        max_tokens:request.maxOutputTokens,stream:false},timeoutMs);
+    } finally {
+      inferenceActive = false;
+    }
     const choice = answer?.choices?.[0];
     requireValue(answer?.model === modelId && choice?.message?.role === 'assistant' &&
       ['stop', 'length'].includes(choice.finish_reason), 502, 'Incomplete or unexpected Strata completion');
@@ -208,9 +215,10 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
         return send(200, await probe(match[1]));
       }
       if (req.method === 'GET' && req.url === '/v1/info') {
-        await profile();
+        // The running request already passed the loaded-model and capacity checks.
+        if (!inferenceActive) await profile();
         return send(200, { provider: wallet.address, chainId, model: MODEL, contextWindow: CONTEXT,
-          backendModel: modelId });
+          backendModel: modelId, busy, inferenceActive });
       }
       requireValue(req.method === 'POST' && req.url === '/v1/infer', 404, 'Route not found');
       requireValue((req.headers['content-type'] ?? '').split(';')[0].trim() === 'application/json',

@@ -8,6 +8,8 @@ GPUChain 是为 Qwen3.8-Flash-Next 开发的**实验性推理积分网络，目�
 
 运行 `npm run status` 查看本机节点已验证的高度和投票状态。`npm stop` 停止节点，`npm start` 用原有数据恢复运行。只需检查一次连接和推理节点时，运行 `npm run join`。
 
+**打开钱包界面**：运行 `npm run gui`，或在 Windows 上双击 **GPUChain Wallet.cmd**。程序会启动节点或使用已运行的节点，再打开浏览器。只读界面显示钱包的公开地址和已验证余额、节点的同步和投票状态，以及本机推理服务适配器的状态。界面使用单独的本机回环端口。运行 `node scripts/open-wallet.mjs --print-url` 可查看实际地址。
+
 ## 账本验证与共识投票
 
 默认节点持续验证账本。要参与交易确认，还需要获准的钱包和可从公网访问的 HTTPS 地址。运营者可以用 `add-validator` 授权节点的钱包公钥地址，已注册的推理提供者钱包也有资格。将 HTTPS 地址转发到本机监听端口（默认为 8790），设置 `GPUCHAIN_VALIDATOR_ORIGIN` 后重启节点。请一起保存钱包和原始数据库，默认数据目录为 `~/.gpuchain/participant`。

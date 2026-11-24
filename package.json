@@ -8,6 +8,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node scripts/participant.mjs start",
+    "gui": "node scripts/open-wallet.mjs",
     "status": "node scripts/participant.mjs status",
     "stop": "node scripts/participant.mjs stop",
     "join": "node scripts/join.mjs",

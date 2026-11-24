@@ -333,6 +333,16 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
     } finally { busy = false; }
   }
 
+  function status() {
+    const mode = voting ? 'validator' : head ? 'verifier' : 'standby';
+    return {chainId:genesis.hash,mode,address:wallet.address,instanceId:store.instanceId,
+      voting,verified:Boolean(head),lastVerifiedAt,ledgerUrl,enrollmentStatus:enrollmentStatus(),enrollmentError,
+      height:head?.state.height,tip:head?.state.tip,epoch:head?.state.epoch,
+      epochTokens:head?.state.epochTokens,totalWorkTokens:head?.state.totalWorkTokens,
+      providers:head?.state.providers,epochTarget:EPOCH_TOKENS,maxOutputTokens:head?.state.maxOutputTokens,
+      syncError:lastSyncError};
+  }
+
   const server = createServer(async (req,res) => {
     const send = (status,result) => {
       res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});
@@ -349,15 +359,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
         return send(200,{payload,signature:sign(wallet.privateKey,payload)});
       }
       if (req.method === 'GET' && path === '/v1/genesis') return send(200,genesis);
-      if (req.method === 'GET' && path === '/v1/status') {
-        const mode = voting ? 'validator' : head ? 'verifier' : 'standby';
-        return send(200,{chainId:genesis.hash,mode,address:wallet.address,instanceId:store.instanceId,
-          voting,verified:Boolean(head),lastVerifiedAt,ledgerUrl,enrollmentStatus:enrollmentStatus(),enrollmentError,
-          height:head?.state.height,tip:head?.state.tip,epoch:head?.state.epoch,
-          epochTokens:head?.state.epochTokens,totalWorkTokens:head?.state.totalWorkTokens,
-          providers:head?.state.providers,epochTarget:EPOCH_TOKENS,maxOutputTokens:head?.state.maxOutputTokens,
-          syncError:lastSyncError});
-      }
+      if (req.method === 'GET' && path === '/v1/status') return send(200,status());
       if (req.method === 'POST' && path === '/v1/consensus/commit') {
         const incoming = await body(req,MAX_CHECKPOINT);
         need(incoming?.authority,400,'Commit requires a validator-certified checkpoint');
@@ -392,7 +394,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
     store.close();
     throw err;
   }
-  return {url,sync,async close() {
+  return {url,sync,snapshot:()=>({status:status(),checkpoint:head ?? null}),async close() {
     if (closed) return;
     closed = true;
     clearInterval(timer);

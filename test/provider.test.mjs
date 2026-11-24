@@ -14,7 +14,7 @@ async function listen(t, server) {
   return 'http://127.0.0.1:' + server.address().port;
 }
 
-async function fixture(t) {
+async function fixture(t, onGenerate) {
   const wallet = generateWallet();
   const payer = generateWallet();
   const chainId = hash('test genesis');
@@ -36,6 +36,7 @@ async function fixture(t) {
       const input = JSON.parse(Buffer.concat(chunks));
       assert.deepEqual(input, { model: modelId, messages, max_tokens: 8, stream: false });
       completions++;
+      if (onGenerate) await onGenerate();
       out = { model: modelId, choices: [{ finish_reason: 'stop', message }], usage };
     } else res.statusCode = 404;
     res.end(JSON.stringify(out ?? {}));
@@ -85,6 +86,24 @@ test('rejects modified authorization, messages, unfunded payer and stale nonce b
   f.state.balances = {};
   assert.equal((await f.submit()).status, 402);
   assert.equal(f.completions(), 0);
+});
+
+test('local status reports active inference only while the backend completion is outstanding', {timeout:5000}, async t => {
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  const f = await fixture(t,async () => { started.resolve(); await release.promise; });
+  const info = async () => (await fetch(f.url+'/v1/info')).json();
+  assert.equal((await info()).inferenceActive,false);
+  const pending = f.submit();
+  try {
+    await started.promise;
+    const running = await info();
+    assert.equal(running.busy,true);
+    assert.equal(running.inferenceActive,true);
+  } finally { release.resolve(); }
+  assert.equal((await pending).status,200);
+  const idle = await info();
+  assert.equal(idle.inferenceActive,false);
+  assert.equal(idle.busy,false);
 });
 
 test('enforces actual loaded model and context, signed prompt cap and current epoch output cap', async t => {

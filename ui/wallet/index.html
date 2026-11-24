@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>GPUChain 지갑</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="frame toolbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i></span><b>GPUChain</b><span class="brand-divider"></span><span class="brand-product">지갑</span></div>
+      <span class="network-tag"><span class="dot"></span>공개 테스트넷</span>
+    </div>
+  </header>
+  <main class="frame">
+    <div class="page-title">
+      <h1>지갑 개요</h1>
+      <div class="page-actions"><span class="updated" id="sample-time">불러오는 중</span><button id="refresh" class="refresh" type="button"><span aria-hidden="true">↻</span>새로고침</button></div>
+    </div>
+    <p class="notice" id="notice" role="status" hidden></p>
+    <section class="balance-card" aria-labelledby="balance-label">
+      <div class="balance-main">
+        <div class="balance-info">
+          <h2 id="balance-label">지갑 잔액</h2>
+          <div class="balance-line"><strong class="money" id="balance">—</strong><span class="coin">코인</span></div>
+          <p class="nano" id="nano">검증된 잔액 대기 중</p>
+        </div>
+        <div class="chip-art" aria-hidden="true"><div class="traces"></div><div class="chip bottom"></div><div class="chip middle"></div><div class="chip top"><i></i><b></b></div></div>
+      </div>
+      <div class="address-bar"><div class="address-info"><span class="address-label">공개 지갑 주소</span><code id="address">—</code></div><button type="button" class="copy" id="copy" disabled><span class="copy-icon" aria-hidden="true"></span><span id="copy-text">주소 복사</span></button></div>
+    </section>
+    <div class="status-grid">
+      <section class="panel" aria-labelledby="node-heading">
+        <div class="section-head"><div class="section-name"><span class="icon-box"><i class="server-icon" aria-hidden="true"></i></span><h2 id="node-heading">검증 노드</h2></div><span id="node-badge" class="badge"><i></i><span>확인 중</span></span></div>
+        <dl class="rows">
+          <div><dt>운영 모드</dt><dd id="node-mode">—</dd></div>
+          <div><dt>합의 투표</dt><dd id="voting">—</dd></div>
+          <div><dt>마지막 검증</dt><dd id="verified-at">—</dd></div>
+        </dl>
+      </section>
+      <section class="panel" aria-labelledby="inference-heading">
+        <div class="section-head"><div class="section-name"><span class="icon-box"><i class="processor-icon" aria-hidden="true"></i></span><h2 id="inference-heading">추론 공급</h2></div><span id="inference-badge" class="badge"><i></i><span>확인 중</span></span></div>
+        <dl class="rows">
+          <div><dt>이 노드의 추론</dt><dd id="node-inference">—</dd></div>
+          <div><dt>로컬 공급 어댑터</dt><dd id="adapter">—</dd></div>
+          <div><dt>이 지갑의 공급자 등록</dt><dd id="registered">—</dd></div>
+          <div id="activity-row" hidden><dt>어댑터 요청 처리</dt><dd id="activity">—</dd></div>
+        </dl>
+      </section>
+    </div>
+    <section class="panel network" aria-labelledby="network-heading">
+      <div class="section-head"><div class="section-name"><span class="icon-box"><i class="network-icon" aria-hidden="true"></i></span><h2 id="network-heading">네트워크 현황</h2></div><span class="subtle" id="consensus">—</span></div>
+      <div class="network-body">
+        <dl class="stats"><div><dt>원장 높이</dt><dd id="height">—</dd></div><div><dt>등록 공급자</dt><dd id="providers">—</dd></div></dl>
+        <div class="epoch"><div class="epoch-head"><label for="progress" id="epoch-title">에포크 진행량</label><span id="percent">—</span></div><progress id="progress" value="0" max="1"></progress><div id="work" class="work">—</div></div>
+      </div>
+    </section>
+    <details class="panel details">
+      <summary>지갑 및 연결 상세<span class="chevron" aria-hidden="true"></span></summary>
+      <dl class="rows details-list">
+        <div><dt>지갑 거래 순번</dt><dd id="nonce">—</dd></div>
+        <div><dt>네트워크 이름</dt><dd id="network-name">—</dd></div>
+        <div><dt>체인 ID</dt><dd class="mono" id="chain-id">—</dd></div>
+        <div><dt>체크포인트 해시</dt><dd class="mono" id="tip">—</dd></div>
+        <div><dt>원장 접속 주소</dt><dd class="mono" id="ledger">—</dd></div>
+        <div><dt>노드 인스턴스 ID</dt><dd class="mono" id="instance">—</dd></div>
+        <div><dt>프로세스 ID</dt><dd id="pid">—</dd></div>
+        <div><dt>합의 등록 상태</dt><dd id="enrollment">—</dd></div>
+        <div><dt>모델</dt><dd id="model">—</dd></div>
+        <div><dt>컨텍스트 용량</dt><dd id="context">—</dd></div>
+        <div><dt>어댑터 공급 주소</dt><dd class="mono" id="provider-address">—</dd></div>
+        <div><dt>어댑터의 지갑 일치</dt><dd id="same-wallet">—</dd></div>
+        <div><dt>어댑터 공급자 등록</dt><dd id="provider-registered">—</dd></div>
+        <div id="error-row" hidden><dt>최근 오류</dt><dd id="last-error" class="warning-text">—</dd></div>
+      </dl>
+    </details>
+    <span class="sr-only" id="feedback" role="status"></span>
+  </main>
+</body>
+</html>

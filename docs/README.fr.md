@@ -8,6 +8,8 @@ GPUChain est un **réseau expérimental de crédits d’inférence, encore en d�
 
 Utilisez `npm run status` pour consulter la hauteur vérifiée et le statut de vote du nœud local. `npm stop` l’arrête et `npm start` le relance avec les mêmes données. Pour vérifier ponctuellement la connexion et les fournisseurs d’inférence, utilisez `npm run join`.
 
+**Ouvrir le portefeuille.** Exécutez `npm run gui`, ou double-cliquez sur **GPUChain Wallet.cmd** sous Windows. Le lanceur démarre le nœud ou réutilise l’instance existante, puis ouvre le navigateur. Le tableau de bord en lecture seule affiche l’adresse publique, le solde du dernier point de contrôle vérifié, la synchronisation et le statut de vote du nœud, ainsi que l’état de l’adaptateur d’inférence local. L’interface écoute sur un port de bouclage distinct. La commande `node scripts/open-wallet.mjs --print-url` affiche son URL.
+
 ## Vérification du registre et vote
 
 Chaque nœud vérifie les points de contrôle. Pour voter sur les transactions, il lui faut également un portefeuille autorisé et une origine HTTPS publique accessible. L’exploitant peut autoriser l’adresse publique du portefeuille avec `add-validator`. Les portefeuilles déjà inscrits comme fournisseurs sont aussi admissibles. Faites suivre le trafic HTTPS vers le port local (8790 par défaut), définissez `GPUCHAIN_VALIDATOR_ORIGIN`, puis redémarrez le nœud. Conservez ensemble le portefeuille et sa base dans leur répertoire de données d’origine, par défaut `~/.gpuchain/participant`.
