@@ -60,7 +60,7 @@ function sampler(origin) {
   };
 }
 
-function overview({status, checkpoint}, sampled) {
+function overview({status, checkpoint, relay}, sampled) {
   if (!hex64(status?.address) || !hex64(status.chainId)) throw Error('Invalid node identity');
   const state = checkpoint?.state;
   if (Boolean(state) !== status.verified || (state && (state.chainId !== status.chainId ||
@@ -94,6 +94,7 @@ function overview({status, checkpoint}, sampled) {
   // other accounts' balances and the full checkpoint never enter the UI response.
   return {
     sampledAt:new Date().toISOString(),
+    relay:relay ? {mode:relay.mode,reachableRelays:relay.reachableRelays,backendUrl:ledgerOrigin(relay.backendUrl)} : null,
     wallet:{address,balanceNanocoins:balance,nonce},
     node:{
       mode:status.mode, verified:status.verified, voting:status.voting, instanceId:status.instanceId,

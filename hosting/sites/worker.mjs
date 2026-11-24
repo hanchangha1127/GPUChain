@@ -8,6 +8,7 @@ import { ledgerPage, ledgerScript } from './ledger-page.mjs';
 import { salesRoute } from './sales.mjs';
 import { commitHostedTransaction, prepareSalesRetirement, retirementGuard } from './sale-holds.mjs';
 import { canValidate, EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
+import { relayRoute, purgeExpiredRelay } from '../../src/relay-service.mjs';
 
 const MAX_TX_BYTES = 16_384;
 // Leave margin for SQLite row and index overhead under D1's 2 MB per-row limit.
@@ -132,7 +133,23 @@ async function dispatch(request, env, options) {
   if (request.method === 'GET' && (path === '/' || path === '/buy')) return checkoutPage();
   if (request.method === 'GET' && path === '/buy.js') return checkoutScript();
   if (request.method === 'GET' && path === '/ledger.js') return ledgerScript();
-  if (path.startsWith('/v1/sales/')) return salesRoute(request,env,path);
+  if (path.startsWith('/v1/sales/')) {
+    const result=await salesRoute(request,env,path);
+    if(path==='/v1/sales/tick' && result.ok && request.method==='POST'){
+      // An authenticated wakeup removes expired relay data even when all GPUs are offline.
+      await purgeExpiredRelay(env.DB.withSession('first-primary')).catch(()=>{});
+    }
+    return result;
+  }
+  if (path.startsWith('/v1/relay/')) {
+    const {initial}=setup(env);
+    const db=env.DB.withSession('first-primary');
+    const {state,authority}=await readHead(db,initial);
+    if(authority && ['presence','submit'].includes(path.split('/').pop())) return json({error:'Relay retired; select a validator'},409);
+    if(authority && path==='/v1/relay/providers') return json({chainId:state.chainId,providers:[]});
+    // Already queued work can finish on its original host during a ledger handover.
+    return relayRoute(request,db,state);
+  }
   const isWrite = request.method === 'POST' && ['/v1/transactions','/v1/consensus/enroll'].includes(path);
   const isRead = request.method === 'GET' &&
     ['/ledger', '/v1/status', '/v1/genesis', '/v1/checkpoint','/v1/consensus/candidates'].includes(path);

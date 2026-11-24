@@ -9,7 +9,7 @@ function transportFor(url) {
 }
 
 // Large local-model completions may run for more than five minutes before sending headers.
-export async function requestJson(value, {method, headers, body, timeoutMs = 30_000, maxBytes = 8 * 1024 * 1024} = {}) {
+export async function requestJson(value, {method, headers, body, timeoutMs = 30_000, maxBytes = 8 * 1024 * 1024, signal} = {}) {
   const url = new URL(value);
   const transport = transportFor(url);
   const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
@@ -20,8 +20,10 @@ export async function requestJson(value, {method, headers, body, timeoutMs = 30_
     requestHeaders['content-length'] = data.length;
   }
   const res = await new Promise((resolve,reject) => {
+    const timeout = AbortSignal.timeout(timeoutMs);
     const req = transport.request(url,{
-      method:method || (data ? 'POST' : 'GET'), headers:requestHeaders, signal:AbortSignal.timeout(timeoutMs)
+      method:method || (data ? 'POST' : 'GET'), headers:requestHeaders,
+      signal:signal ? AbortSignal.any([signal,timeout]) : timeout
     },resolve);
     req.on('error',reject);
     req.end(data);

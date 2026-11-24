@@ -32,7 +32,15 @@ node scripts/bootstrap.mjs
 
 공급 엔진은 `--engine ryzenstrata`(기본) 또는 `--engine strata`로 선택합니다. `provider` 명령과 `scripts/bootstrap.mjs` 모두 이 옵션과 `--strata`, `--model-id`를 지원합니다. RYZENStrata의 기본 모델 ID는 `qwen3.8-flash-next-q2_0`입니다. 원본 Strata는 조건에 맞는 로드된 모델이 하나면 자동으로 선택하며 여러 개면 모델 ID를 지정해야 합니다. 지원 모델은 **Qwen3.8-Flash-Next**와 해당 가중치의 호환 양자화본으로 한정됩니다. 컨텍스트는 **262,144토큰(256K) 이상**이어야 하고 실행 중인 **K와 V 캐시 각각 Q8 이상**이어야 합니다. Q2_0 가중치와 Q8 KV 캐시를 함께 쓸 수 있습니다. 추론 전과 영수증 서명 전에 엔진 `/metrics`로 실행 모델·컨텍스트·KV 형식을 확인합니다. [원본 Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
-구매자는 `node src/cli.mjs chat`으로 원장과 선택된 공급자에 아웃바운드 HTTPS(통상 443번)로 접속합니다. 일반 사용자 PC에서 LAN에 여는 OpenAI 호환 소비자 게이트웨이는 제공하지 않습니다. 공급자는 공개 HTTPS 프록시를 로컬 어댑터의 8789번 포트로 연결합니다. 어댑터는 기본적으로 공급자 PC의 `http://127.0.0.1:8000/v1` 추론 백엔드를 호출합니다.
+실행 중인 GPUChain 노드는 로컬 Strata를 **8080 → 8000** 순으로 확인하고, 모델·256K 컨텍스트·K/V 정밀도 조건에 맞는 엔진을 `127.0.0.1:8789` 공급 어댑터에 자동 연결합니다. RYZENStrata를 나중에 켜도 됩니다. 감지 과정에서는 모델을 로드하거나 토큰을 생성하지 않습니다. 다른 로컬 주소는 `GPUCHAIN_STRATA_URL`로 지정하고, 자동 연결은 `GPUCHAIN_AUTO_PROVIDER=0`으로 끌 수 있습니다. 변경 후 노드를 다시 시작하세요.
+
+원장에 등록된 공급자는 아웃바운드 HTTPS(보통 443번)를 쓰는 암호화 릴레이로 유료 추론을 제공할 수 있습니다. 공급자 PC의 포트 개방·터널·검증기 공개 주소·위원회 투표권은 필요하지 않습니다. 운영 시퀀서가 거래를 확정하는 동안에도 실제로 처리하고 요청자와 정산한 작업에서 코인을 받습니다. 검증기 3대의 위원회 구성은 별도 절차입니다. `routes --transport relay`로 공급 상태를 확인하고, `chat --transport auto`는 적격 직접 연결 후 릴레이 순으로 선택합니다. 직접 연결을 운영하려면 공개 HTTPS를 8789번에 전달하고 그 주소를 등록합니다. `GPUCHAIN_INFERENCE_RELAY=0`은 릴레이만 끕니다. 릴레이의 요청·응답은 각각 암호화 전 JSON 최대 8 MiB입니다.
+
+요청자는 `--reasoning-effort none|low|medium|high`로 추론 강도를 정합니다. `max`와 `xhigh`는 `high`로 처리합니다. `--reasoning-budget-tokens N`의 범위는 0부터 `--max-output`까지입니다. 0은 엔진의 별도 사고 토큰 한도를 해제합니다. 사고를 끄려면 `none`을 쓰고 예산은 생략하거나 0으로 지정하세요. 두 옵션을 생략하면 엔진 기본 설정을 씁니다. 사고 토큰은 최대 출력 한도에 포함되고 출력 사용량으로 한 번만 정산됩니다.
+
+~~~powershell
+node src/cli.mjs chat --wallet user.wallet.json --text "두 방법을 비교해 줘." --max-input 1024 --max-output 512 --reasoning-effort high --reasoning-budget-tokens 256
+~~~
 
 공급자가 준비되면 두 번째 PowerShell 창에서 다음처럼 실행합니다.
 

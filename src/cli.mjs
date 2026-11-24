@@ -9,7 +9,9 @@ import { SALE_TERMS } from './sale-policy.mjs';
 import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
 import { requestJson } from './http.mjs';
-import { probeProvider, rankProviders } from './routing.mjs';
+import { probeProvider } from './routing.mjs';
+import { inferenceRoutes } from './inference-routes.mjs';
+import { relayInfer } from './relay-client.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
@@ -35,10 +37,11 @@ const usage = `GPUChain
   promote-mainnet --wallet SEQUENCER_KEY [--ledger URL]
   authorize-sales --wallet RESERVE_KEY --authority SALE_ADDRESS --coins LIFETIME_CAP [--ledger URL]
   suspend-sales --wallet RESERVE_KEY [--ledger URL]
-  routes   [--genesis FILE] [--ledger URL] [--max-output N] [--wallet KEY]
+  routes   [--genesis FILE] [--ledger URL] [--max-output N] [--wallet KEY] [--transport auto|direct|relay]
   chat     [--genesis FILE] --wallet KEY [--provider-url URL --provider-address ADDRESS]
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
            [--reasoning-effort none|low|medium|high] [--reasoning-budget-tokens N]
+           [--transport auto|direct|relay]
   settings --genesis FILE --wallet SEQUENCER_KEY --max-output N [--ledger URL]
   add-provider --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS [--url URL] [--ledger URL]
   add-validator --wallet SEQUENCER_KEY --address ADDRESS [--genesis FILE] [--ledger URL]
@@ -56,13 +59,13 @@ const flags = {
   follower: ['genesis','upstream','dir','listen','port','sync-ms'],
   provider: ['genesis','wallet','ledger','engine','strata','model-id','listen','port'],
   status: ['genesis','ledger'], verify: ['genesis','ledger'],
-  routes: ['genesis','ledger','max-output','wallet'],
+  routes: ['genesis','ledger','max-output','wallet','transport'],
   balance: ['genesis','ledger','address'],
   transfer: ['genesis','ledger','wallet','to','coins'],
   'issue-reserve': ['genesis','ledger','wallet'],
   'promote-mainnet': ['genesis','ledger','wallet'],
   chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output',
-    'reasoning-effort','reasoning-budget-tokens'],
+    'reasoning-effort','reasoning-budget-tokens','transport'],
   settings: ['genesis','ledger','wallet','max-output'],
   'add-provider': ['genesis','ledger','wallet','address','url'],
   'add-validator': ['genesis','ledger','wallet','address'],
@@ -138,8 +141,10 @@ function nextNonce(state, from) {
 
 async function chat(v, wallet, ledger, resolveSettlement) {
   const {url:base,state} = ledger;
-  if ((v['provider-url'] === undefined) !== (v['provider-address'] === undefined)) {
-    throw Error('To pin a provider, supply both --provider-url and --provider-address');
+  const transport = v.transport ?? 'auto';
+  if (!['auto','direct','relay'].includes(transport)) throw Error('Transport must be auto, direct or relay');
+  if (v['provider-url'] !== undefined && (v['provider-address'] === undefined || transport === 'relay')) {
+    throw Error('A direct --provider-url requires --provider-address and a direct or automatic transport');
   }
   if ((v.text !== undefined) === (v['text-file'] !== undefined)) throw Error('Supply one of --text and --text-file');
   const prompt = v.text ?? await readFile(v['text-file'],'utf8');
@@ -156,12 +161,13 @@ async function chat(v, wallet, ledger, resolveSettlement) {
   const cap = charge({ inputTokens:maxInputTokens, cachedTokens:0, outputTokens:maxOutputTokens });
   if (decodeAmount(state.balances[wallet.address] ?? 0) < BigInt(cap)) throw Error('Insufficient balance for authorized token limits');
   let target;
-  if (v['provider-address'] !== undefined) {
-    target = {provider:address(v['provider-address']),url:endpoint(v['provider-url'])};
+  if (v['provider-url'] !== undefined) {
+    target = {provider:address(v['provider-address']),url:endpoint(v['provider-url']),transport:'direct',latencyKind:'provider-rtt'};
     if (!state.providers.includes(target.provider)) throw Error('Provider is absent from trusted chain');
     target.latencyMs = await probeProvider(target,state.chainId,maxOutputTokens,needsReasoning);
   } else {
-    const ranked = await rankProviders(state,{payer:wallet.address,ledgerUrl:base,maxOutputTokens,reasoning:needsReasoning});
+    const ranked = await inferenceRoutes(ledger,{payer:wallet.address,transport,maxOutputTokens,
+      provider:v['provider-address'] === undefined ? undefined : address(v['provider-address']),reasoning:needsReasoning});
     target = ranked[0];
     if (!target) throw Error('No available registered provider responded. Check advertised endpoints with routes.');
   }
@@ -172,8 +178,10 @@ async function chat(v, wallet, ledger, resolveSettlement) {
     nonce:nextNonce(state,wallet.address), expiresAt:Date.now() + 300_000,
     messagesHash:hash(messages), maxOutputTokens, maxInputTokens,...reasoning
   };
-  const { message, payload, providerSignature } = await requestJson(url + '/v1/infer',
-    {body:{request, signature:sign(wallet.privateKey,request), messages}, timeoutMs:3_630_000});
+  const signature = sign(wallet.privateKey,request);
+  const { message, payload, providerSignature } = target.transport==='relay'
+    ? await relayInfer({wallet,relayUrl:url,chainId:state.chainId,provider,offer:target.offer,request,signature,messages})
+    : await requestJson(url+'/v1/infer',{body:{request,signature,messages},timeoutMs:3_630_000});
   if (message?.role !== 'assistant' ||
       !(typeof message.content === 'string' || (message.content === null && typeof message.reasoning_content === 'string'))) {
     throw Error('Invalid assistant message');
@@ -196,7 +204,8 @@ async function chat(v, wallet, ledger, resolveSettlement) {
     throw Error('Wallet nonce changed during inference; receipt could not be settled');
   }
   const settlement = await submit(targetLedger,expected,wallet,providerSignature);
-  return { provider, providerUrl:url, latencyMs:target.latencyMs, reasoning, message,
+  return { provider, providerUrl:url, transport:target.transport, latencyKind:target.latencyKind,
+    latencyMs:target.latencyMs, reasoning, message,
     usage:{inputTokens,cachedTokens,outputTokens}, coins:formatCoins(charge(expected)), settlement };
 }
 
@@ -305,7 +314,8 @@ async function main() {
   if (command === 'routes') {
     const maxOutputTokens = uint(v['max-output'] ?? 1,'max-output',1,state.maxOutputTokens);
     const payer = v.wallet ? (await walletFrom(v)).address : undefined;
-    return print({providers:await rankProviders(state,{payer,ledgerUrl:base,maxOutputTokens})});
+    const routes = await inferenceRoutes(ledger,{payer,transport:v.transport,maxOutputTokens});
+    return print({providers:routes.map(({offer,...summary})=>summary)});
   }
   if (command === 'verify') return print({verified:true,scope:checkpoint.authority ? 'validator-consensus' : 'signed-checkpoint',
     chainId:state.chainId,networkId:state.networkId,networkStage:state.networkStage ?? null,height:state.height,tip:state.tip});

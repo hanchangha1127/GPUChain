@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { resolvePublicLedger } from '../src/public-network.mjs';
-import { rankProviders } from '../src/routing.mjs';
+import { inferenceRoutes } from '../src/inference-routes.mjs';
 
 try {
-  const {url, state, mode} = await resolvePublicLedger();
-  const readyProviders = await rankProviders(state, {ledgerUrl:url});
+  const ledger = await resolvePublicLedger();
+  const {url,state,mode} = ledger;
+  const readyProviders = (await inferenceRoutes(ledger)).map(({offer,...summary})=>summary);
   console.log(JSON.stringify({
     connected:true,
     verified:true,

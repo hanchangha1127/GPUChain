@@ -11,7 +11,7 @@ let offline = false;
 const roles = {standby:"Waiting for checkpoint",verifier:"Ledger verifier",validator:"Consensus validator"};
 const enrollments = {
   voting:"Voting member", 'committee-fixed':"Committee already formed", 'identity-mismatch':"Node identity mismatch",
-  'needs-public-origin':"Public HTTPS endpoint required", 'needs-registration':"Wallet authorization required",
+  'needs-public-origin':"Dedicated HTTPS endpoint required to vote", 'needs-registration':"Wallet authorization required",
   candidate:"Validator candidate", 'waiting-for-checkpoint':"Waiting for first checkpoint"
 };
 const adapterStates = {
@@ -81,6 +81,10 @@ function render(data) {
   show('node-inference',bool(inference.nodeRunsInference,"On","Off"));
   show('adapter',adapterStates[inference.adapter] ?? "Unavailable");
   show('registered',bool(inference.walletRegistered,"Registered","Not registered"));
+  show('relay-mode',({ready:'Connected',busy:'Handling a request',offline:'Disconnected',
+    error:'Unavailable',connecting:'Checking',disabled:'Off','waiting-for-model':'Waiting for local model',
+    'waiting-for-registration':'Wallet authorization required'})[data.relay?.mode]);
+  show('engine-origin',data.relay?.backendUrl);
   el('activity-row').hidden = !online;
   show('activity',bool(inference.inferenceActive,"Generating",inference.busy ? "Handling a request" : "Idle"));
   show('model',inference.model);

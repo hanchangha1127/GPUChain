@@ -1,6 +1,10 @@
 // English message keys are the fallback; translations follow the selector order.
 export const locales = ['en','ko','ja','zh-CN','fr'];
 const messages = {
+  "Dedicated HTTPS endpoint required to vote":["합의 투표에만 전용 HTTPS 주소 필요","投票には専用 HTTPS が必要","投票需要专用 HTTPS 地址","Adresse HTTPS dédiée requise pour voter"],
+  "GPUChain relay":["GPUChain 중계","GPUChain リレー","GPUChain 中继","Relais GPUChain"],
+  "Waiting for local model":["로컬 모델 로드 대기","ローカルモデル待機中","等待本地模型加载","En attente du modèle local"],
+  "Local engine endpoint":["로컬 엔진 접속 주소","ローカルエンジン接続先","本地引擎地址","Adresse du moteur local"],
   "Mainnet":["메인넷","メインネット","主网","Réseau principal"],
   "KV cache precision":["KV 캐시 정밀도","KV キャッシュ精度","KV 缓存精度","Précision du cache KV"],
   "Inference engine":["추론 엔진","推論エンジン","推理引擎","Moteur d’inférence"],

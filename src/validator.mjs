@@ -11,6 +11,7 @@ import { requestJson } from './http.mjs';
 import { canValidate, EPOCH_TOKENS, MAINNET, replay } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { SALE_TERMS } from './sale-policy.mjs';
+import { localRelay } from './local-relay.mjs';
 
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
 const MAX_TX = 16_384;
@@ -114,6 +115,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
   need(addressFromPrivateKey(wallet.privateKey) === wallet.address,400,'Validator wallet does not match address');
   const publicOrigin = origin && normalizeProviderEndpoint(origin);
   const store = open(dir,genesis,wallet);
+  const relay = localRelay(dir);
   let head, members = [], keys = new Set(), authorityHash;
   let busy = false, closed = false, syncing, timer, url, lastSyncError = null;
   let voting = false, lastVerifiedAt = null, ledgerUrl = null, enrollmentError = null;
@@ -352,6 +354,10 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
     try {
       const target = new URL(req.url,'http://localhost');
       const path = target.pathname;
+      if (path.startsWith('/v1/relay/')) {
+        need(head && voting,503,'Only an active validator can host the relay');
+        return await relay.serve(req,res,head.state);
+      }
       if (req.method === 'GET' && path === '/v1/consensus/ready') {
         const challenge = target.searchParams.get('challenge');
         need(/^[a-f0-9]{32}$/.test(challenge ?? ''),400,'Invalid readiness challenge');
@@ -397,6 +403,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
     timer = setInterval(() => { sync().catch(() => {}); },syncIntervalMs);
   } catch (err) {
     if (server.listening) await new Promise(resolve => server.close(resolve));
+    relay.close();
     store.close();
     throw err;
   }
@@ -406,6 +413,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
     clearInterval(timer);
     await new Promise(resolve => server.close(resolve));
     await syncing?.catch(() => {});
+    relay.close();
     store.close();
   }};
 }

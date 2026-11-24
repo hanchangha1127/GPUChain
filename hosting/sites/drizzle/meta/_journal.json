@@ -29,6 +29,13 @@
       "when": 1795525175744,
       "tag": "0003_sale_quorum_escrow",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795528515932,
+      "tag": "0004_relay_mailbox",
+      "breakpoints": true
     }
   ]
 }

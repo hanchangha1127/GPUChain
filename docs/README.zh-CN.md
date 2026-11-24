@@ -36,7 +36,13 @@ Sites 核验三个就绪节点的签名、地址和数据库标识后，签发�
 
 需要独立开发网络时，运行 `node scripts/bootstrap.mjs` 即可启动。也可以按以下步骤分别启动各个角色。
 
-使用 Node.js 24 或更高版本。提供者可以向 `provider` 命令或 `scripts/bootstrap.mjs` 传入 `--engine ryzenstrata`（默认）或 `--engine strata`。前者的默认模型 ID 是 `qwen3.8-flash-next-q2_0`。后者会选择唯一符合要求的已加载模型；有多个候选时请用 `--model-id` 指定。`--strata` 设置引擎地址，`STRATA_API_KEY` 用于后端认证。将公网 HTTPS 转发到本机 GPUChain 适配器的 8789 端口。适配器默认访问 `http://127.0.0.1:8000/v1`。用户通过 `chat` 命令向外发起 HTTPS 请求（通常为 443 端口）。客户端没有面向局域网的 OpenAI 兼容网关。 [Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+使用 Node.js 24 或更高版本。提供者可以向 `provider` 命令或 `scripts/bootstrap.mjs` 传入 `--engine ryzenstrata`（默认）或 `--engine strata`。前者的默认模型 ID 是 `qwen3.8-flash-next-q2_0`。后者会选择唯一符合要求的已加载模型；有多个候选时请用 `--model-id` 指定。`--strata` 设置引擎地址，`STRATA_API_KEY` 用于后端认证。 [Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+
+运行中的参与节点按 **8080、8000** 的顺序探测本地 Strata，将符合模型、256K 上下文和 KV 精度要求的引擎连接到 `127.0.0.1:8789`。先启动节点、后启动引擎也可以。探测不会加载模型或生成词元。用 `GPUCHAIN_STRATA_URL` 指定本地后端，或用 `GPUCHAIN_AUTO_PROVIDER=0` 关闭自动连接。更改后重启节点。
+
+在账本中注册的提供方可通过仅使用出站 HTTPS（通常为 443）的加密中继提供推理，无需入站隧道、验证节点的公网地址或委员会投票权。排序节点仍在运行时，已完成并经请求方结算的推理也能获得代币。用 `routes --transport relay` 检查中继提供方。`chat --transport auto` 优先使用符合条件的直连端点，再使用中继。直连需要注册转发到 8789 的公网 HTTPS 地址。中继的明文 JSON 请求和响应各限 8 MiB。`GPUCHAIN_INFERENCE_RELAY=0` 可关闭中继。
+
+用 `--reasoning-effort none|low|medium|high` 选择推理强度，`max` 和 `xhigh` 映射为 `high`。`--reasoning-budget-tokens N` 为 0 到 `--max-output` 之间的整数。0 表示移除引擎单独设置的思考词元上限。如需关闭思考，使用 `none` 并省略预算或设为 0。两项均省略时使用引擎默认值。思考词元计入输出上限，仅作为输出用量计费一次。
 
 **手动初始化时，在终端 1 创建钱包、分配初始余额并启动排序节点。** 在新的 `.local` 目录下运行一次钱包和创世文件创建命令。下面的配置向请求者分配 1 枚代币。钱包文件含有私钥。多机部署时，每个参与者应在自己的机器上保管钱包。已使用一键启动脚本的用户可直接运行终端 3 的客户端命令。
 

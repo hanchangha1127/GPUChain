@@ -4,6 +4,7 @@ import test from 'node:test';
 import { generateWallet, hash, sign, verify } from '../src/crypto.mjs';
 import { CONTEXT, MODEL, charge } from '../src/ledger.mjs';
 import { createProviderServer } from '../src/provider.mjs';
+import { reasoningEffort } from '../src/reasoning.mjs';
 
 async function listen(t, server) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -27,20 +28,25 @@ async function fixture(t, onGenerate, config = {}) {
     prompt_tokens_details: { cached_tokens: 8 } };
   const messages = [{ role: 'user', content: '인사해 줘' }];
   let completions = 0;
+  const counts = [], chats = [];
   const backend = await listen(t, http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer test-secret');
     let out;
     if (req.url === '/v1/models') out = { data: catalog };
     else if(req.url === '/metrics') out=metrics;
-    else if (req.url === '/v1/messages/count_tokens') out = { input_tokens: 15 };
-    else if (req.url === '/v1/chat/completions') {
+    else if (req.url === '/v1/messages/count_tokens' || req.url === '/v1/chat/completions') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const input = JSON.parse(Buffer.concat(chunks));
-      assert.deepEqual(input, { model: modelId, messages, max_tokens: 8, stream: false });
-      completions++;
-      if (onGenerate) await onGenerate();
-      out = { model: modelId, choices: [{ finish_reason: 'stop', message }], usage };
+      if (req.url === '/v1/messages/count_tokens') {
+        counts.push(input);
+        out = {input_tokens:15};
+      } else {
+        chats.push(input);
+        completions++;
+        if (onGenerate) await onGenerate();
+        out = { model: modelId, choices: [{ finish_reason: 'stop', message }], usage };
+      }
     } else res.statusCode = 404;
     res.end(JSON.stringify(out ?? {}));
   }));
@@ -58,7 +64,7 @@ async function fixture(t, onGenerate, config = {}) {
       body: JSON.stringify({ request, signature: sign(payer.privateKey, request), messages, ...body }) });
     return { status: res.status, data: await res.json() };
   }
-  return { url, model, catalog, metrics, usage, message, request, submit, wallet, completions: () => completions, state };
+  return { url, model, catalog, metrics, usage, message, messages, counts, chats, request, submit, wallet, completions: () => completions, state };
 }
 
 test('loaded RYZENStrata profile, measured usage, receipt signature and retry', async t => {
@@ -70,6 +76,8 @@ test('loaded RYZENStrata profile, measured usage, receipt signature and retry', 
   assert.equal(profile.contextWindow, CONTEXT);
   const { status, data } = await f.submit();
   assert.equal(status, 200, JSON.stringify(data));
+  assert.deepEqual(f.chats[0],{model:f.model.id,messages:f.messages,max_tokens:8,stream:false});
+  assert.deepEqual(f.counts[0],{model:f.model.id,messages:f.messages});
   assert.equal(data.payload.requestHash, hash(f.request));
   assert.ok(!Object.hasOwn(data.payload,'kvCache'));
   assert.equal(data.payload.responseHash, hash(f.message));
@@ -80,6 +88,50 @@ test('loaded RYZENStrata profile, measured usage, receipt signature and retry', 
   f.request.expiresAt++;
   assert.equal((await f.submit()).status, 409);
   assert.equal(f.completions(), 1);
+});
+
+test('signed effort and reasoning budget reach both Strata APIs and bind the result without charging twice', async t => {
+  const f=await fixture(t);
+  f.state.networkStage='mainnet';
+  f.message.reasoning_content='A short reasoning trace.';
+  f.usage.completion_tokens_details={reasoning_tokens:2};
+  for (const [index,effort] of ['none','low','medium','high'].entries()) {
+    f.request.nonce=index+1;
+    f.state.nonces[f.request.payer]=index;
+    f.request.reasoningEffort=effort;
+    f.request.reasoningBudgetTokens=effort==='none' ? 0 : 3;
+    const {status,data}=await f.submit();
+    assert.equal(status,200,JSON.stringify(data));
+    const backend={model:f.model.id,messages:f.messages,reasoning_budget_tokens:f.request.reasoningBudgetTokens};
+    assert.deepEqual(f.chats[index],{...backend,max_tokens:8,stream:false,reasoning_effort:effort});
+    const template=effort==='none' ? {thinking:{type:'disabled'}} : {output_config:{effort}};
+    assert.deepEqual(f.counts[index],{...backend,...template});
+    assert.equal(data.payload.requestHash,hash(f.request));
+    assert.equal(data.payload.responseHash,hash(f.message));
+    assert.equal(data.message.reasoning_content,f.message.reasoning_content);
+    assert.equal(data.payload.outputTokens,4);
+    assert.equal(charge(data.payload),7*150+8*16+4*470);
+    assert.ok(verify(f.wallet.address,data.payload,data.providerSignature));
+  }
+  for (const alias of ['max','xhigh']) assert.equal(reasoningEffort(alias),'high');
+});
+
+test('changing signed reasoning or exceeding the signed output budget is rejected before tokenization', async t => {
+  const f=await fixture(t);
+  Object.assign(f.request,{reasoningEffort:'medium',reasoningBudgetTokens:3});
+  for (const delta of [{reasoningEffort:'high'},{reasoningBudgetTokens:4}]) {
+    assert.equal((await f.submit({request:{...f.request,...delta}})).status,403);
+  }
+  const base={...f.request};
+  for (const delta of [
+    {reasoningEffort:'none',reasoningBudgetTokens:1},{reasoningBudgetTokens:-1},
+    {reasoningBudgetTokens:9},{reasoningBudgetTokens:1.5},{reasoningEffort:'max'},
+  ]) {
+    Object.assign(f.request,base,delta);
+    assert.equal((await f.submit()).status,400);
+  }
+  assert.equal(f.counts.length,0);
+  assert.equal(f.completions(),0);
 });
 
 test('upstream Strata discovers the exact loaded base model from its linked quant alias and bills measured cache usage',async t=>{

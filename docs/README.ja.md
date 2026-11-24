@@ -36,7 +36,13 @@ Sites が準備の整った 3 台の署名・接続先・データベース ID �
 
 開発用ネットワークを作るには `node scripts/bootstrap.mjs` を実行します。役割ごとに手動で起動する手順は次のとおりです。
 
-Node.js 24 以降を使用します。提供者は `provider` または `scripts/bootstrap.mjs` に `--engine ryzenstrata`（既定）か `--engine strata` を指定します。前者の既定のモデル ID は `qwen3.8-flash-next-q2_0` です。後者は条件を満たすモデルが一つなら自動選択し、複数ある場合は `--model-id` で指定します。エンジンの URL は `--strata`、認証キーは `STRATA_API_KEY` で設定します。公開 HTTPS を GPUChain アダプターのローカルポート 8789 に転送します。アダプターは既定で `http://127.0.0.1:8000/v1` のエンジンを呼びます。利用者は `chat` コマンドから外向き HTTPS（通常 443）を使用します。LAN 用の OpenAI 互換 API を利用者側で公開する機能はありません。 [Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+Node.js 24 以降を使用します。提供者は `provider` または `scripts/bootstrap.mjs` に `--engine ryzenstrata`（既定）か `--engine strata` を指定します。前者の既定のモデル ID は `qwen3.8-flash-next-q2_0` です。後者は条件を満たすモデルが一つなら自動選択し、複数ある場合は `--model-id` で指定します。エンジンの URL は `--strata`、認証キーは `STRATA_API_KEY` で設定します。公開 HTTPS を GPUChain アダプターのローカルポート 8789 に転送します。アダプターは既定で `http://127.0.0.1:8000/v1` のエンジンを呼びます。利用者は `chat` コマンドから外向き HTTPS（通常 443）を使用します。LAN 用の OpenAI 互換 API を利用者側で公開する機能はありません。 [Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata
+
+起動中の参加ノードはローカルの Strata を **8080、8000 の順**に検出し、モデル・256K コンテキスト・KV 精度の条件を満たすエンジンを `127.0.0.1:8789` に接続します。エンジンを後から起動しても接続できます。検出処理はモデルを起動しません。`GPUCHAIN_STRATA_URL` で接続先を指定し、`GPUCHAIN_AUTO_PROVIDER=0` で自動接続を無効にできます。設定変更後はノードを再起動します。
+
+台帳に登録された提供者は、外向き HTTPS（通常 443）を使う暗号化リレーで推論を提供できます。受信用トンネル、検証者の公開 URL、委員会の投票権は不要です。シーケンサー運用中でも、利用者と精算した推論に対してコインを受け取れます。`routes --transport relay` でリレー提供者を確認してください。直接接続には 8789 に転送する公開 HTTPS オリジンを登録します。`chat --transport auto` は直接接続を優先し、適格な接続先がなければリレーを使います。リレーの平文 JSON は要求と応答で各 8 MiB までです。`GPUCHAIN_INFERENCE_RELAY=0` でリレーを無効にできます。
+
+推論の強度は `--reasoning-effort none|low|medium|high` で選択でき、`max` と `xhigh` は `high` になります。`--reasoning-budget-tokens N` は 0 から `--max-output` までの整数です。0 は追加の思考トークン上限を解除します。`none` で思考を無効にする場合、予算は省略するか 0 にします。両方省略するとエンジンの既定値が使われます。思考トークンは出力上限に含まれ、出力料金として一度だけ計上されます。
 
 **ターミナル 1 でウォレットとネットワークを作成し、シーケンサーを起動します。** この例では利用者に初期残高 1 コインを割り当てます。新しい `.local` ディレクトリでウォレットとジェネシスを一度だけ作成します。ウォレットファイルには秘密鍵が入っています。別々のマシンで運用する際は各所有者が手元で保管してください。
 
