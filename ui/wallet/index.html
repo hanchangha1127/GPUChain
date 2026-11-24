@@ -1,82 +1,93 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>GPUChain 지갑</title>
+  <title>GPUChain Wallet</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
+  <script type="module" src="/send.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="frame toolbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i></span><b>GPUChain</b><span class="brand-divider"></span><span class="brand-product">지갑</span></div>
-      <span class="network-tag"><span class="dot"></span>공개 테스트넷</span>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i></span><b>GPUChain</b><span class="brand-divider"></span><span class="brand-product"><span data-i18n="Wallet">Wallet</span></span></div>
+      <div class="top-actions"><label class="lang-control"><span data-i18n="Language">Language</span><select id="language"><option value="en" lang="en">English</option><option value="ko" lang="ko">한국어</option><option value="ja" lang="ja">日本語</option><option value="zh-CN" lang="zh-CN">简体中文</option><option value="fr" lang="fr">Français</option></select></label><span class="network-tag"><span class="dot"></span><span data-i18n="Public testnet">Public testnet</span></span></div>
     </div>
   </header>
   <main class="frame">
     <div class="page-title">
-      <h1>지갑 개요</h1>
-      <div class="page-actions"><span class="updated" id="sample-time">불러오는 중</span><button id="refresh" class="refresh" type="button"><span aria-hidden="true">↻</span>새로고침</button></div>
+      <h1><span data-i18n="Wallet overview">Wallet overview</span></h1>
+      <div class="page-actions"><span class="updated" id="sample-time"><span data-i18n="Loading">Loading</span></span><button id="refresh" class="refresh" type="button"><span aria-hidden="true">↻</span><span data-i18n="Refresh">Refresh</span></button></div>
     </div>
     <p class="notice" id="notice" role="status" hidden></p>
     <section class="balance-card" aria-labelledby="balance-label">
       <div class="balance-main">
         <div class="balance-info">
-          <h2 id="balance-label">지갑 잔액</h2>
-          <div class="balance-line"><strong class="money" id="balance">—</strong><span class="coin">코인</span></div>
-          <p class="nano" id="nano">검증된 잔액 대기 중</p>
+          <h2 id="balance-label"><span data-i18n="Wallet balance">Wallet balance</span></h2>
+          <div class="balance-line"><strong class="money" id="balance">—</strong><span class="coin"><span data-i18n="coins">coins</span></span></div>
+          <p class="nano" id="nano"><span data-i18n="Waiting for a verified balance">Waiting for a verified balance</span></p>
         </div>
         <div class="chip-art" aria-hidden="true"><div class="traces"></div><div class="chip bottom"></div><div class="chip middle"></div><div class="chip top"><i></i><b></b></div></div>
       </div>
-      <div class="address-bar"><div class="address-info"><span class="address-label">공개 지갑 주소</span><code id="address">—</code></div><button type="button" class="copy" id="copy" disabled><span class="copy-icon" aria-hidden="true"></span><span id="copy-text">주소 복사</span></button></div>
+      <div class="address-bar"><div class="address-info"><span class="address-label"><span data-i18n="Public wallet address">Public wallet address</span></span><code id="address">—</code></div><button type="button" class="copy" id="copy" disabled><span class="copy-icon" aria-hidden="true"></span><span id="copy-text"><span data-i18n="Copy address">Copy address</span></span></button></div>
     </section>
     <div class="status-grid">
       <section class="panel" aria-labelledby="node-heading">
-        <div class="section-head"><div class="section-name"><span class="icon-box"><i class="server-icon" aria-hidden="true"></i></span><h2 id="node-heading">검증 노드</h2></div><span id="node-badge" class="badge"><i></i><span>확인 중</span></span></div>
+        <div class="section-head"><div class="section-name"><span class="icon-box"><i class="server-icon" aria-hidden="true"></i></span><h2 id="node-heading"><span data-i18n="Verification node">Verification node</span></h2></div><span id="node-badge" class="badge"><i></i><span><span data-i18n="Checking">Checking</span></span></span></div>
         <dl class="rows">
-          <div><dt>운영 모드</dt><dd id="node-mode">—</dd></div>
-          <div><dt>합의 투표</dt><dd id="voting">—</dd></div>
-          <div><dt>마지막 검증</dt><dd id="verified-at">—</dd></div>
+          <div><dt><span data-i18n="Operating mode">Operating mode</span></dt><dd id="node-mode">—</dd></div>
+          <div><dt><span data-i18n="Consensus voting">Consensus voting</span></dt><dd id="voting">—</dd></div>
+          <div><dt><span data-i18n="Last verification">Last verification</span></dt><dd id="verified-at">—</dd></div>
         </dl>
       </section>
       <section class="panel" aria-labelledby="inference-heading">
-        <div class="section-head"><div class="section-name"><span class="icon-box"><i class="processor-icon" aria-hidden="true"></i></span><h2 id="inference-heading">추론 공급</h2></div><span id="inference-badge" class="badge"><i></i><span>확인 중</span></span></div>
+        <div class="section-head"><div class="section-name"><span class="icon-box"><i class="processor-icon" aria-hidden="true"></i></span><h2 id="inference-heading"><span data-i18n="Inference service">Inference service</span></h2></div><span id="inference-badge" class="badge"><i></i><span><span data-i18n="Checking">Checking</span></span></span></div>
         <dl class="rows">
-          <div><dt>이 노드의 추론</dt><dd id="node-inference">—</dd></div>
-          <div><dt>로컬 공급 어댑터</dt><dd id="adapter">—</dd></div>
-          <div><dt>이 지갑의 공급자 등록</dt><dd id="registered">—</dd></div>
-          <div id="activity-row" hidden><dt>어댑터 요청 처리</dt><dd id="activity">—</dd></div>
+          <div><dt><span data-i18n="Inference on this node">Inference on this node</span></dt><dd id="node-inference">—</dd></div>
+          <div><dt><span data-i18n="Local provider adapter">Local provider adapter</span></dt><dd id="adapter">—</dd></div>
+          <div><dt><span data-i18n="This wallet as a provider">This wallet as a provider</span></dt><dd id="registered">—</dd></div>
+          <div id="activity-row" hidden><dt><span data-i18n="Adapter activity">Adapter activity</span></dt><dd id="activity">—</dd></div>
         </dl>
       </section>
     </div>
     <section class="panel network" aria-labelledby="network-heading">
-      <div class="section-head"><div class="section-name"><span class="icon-box"><i class="network-icon" aria-hidden="true"></i></span><h2 id="network-heading">네트워크 현황</h2></div><span class="subtle" id="consensus">—</span></div>
+      <div class="section-head"><div class="section-name"><span class="icon-box"><i class="network-icon" aria-hidden="true"></i></span><h2 id="network-heading"><span data-i18n="Network">Network</span></h2></div><span class="subtle" id="consensus">—</span></div>
       <div class="network-body">
-        <dl class="stats"><div><dt>원장 높이</dt><dd id="height">—</dd></div><div><dt>등록 공급자</dt><dd id="providers">—</dd></div></dl>
-        <div class="epoch"><div class="epoch-head"><label for="progress" id="epoch-title">에포크 진행량</label><span id="percent">—</span></div><progress id="progress" value="0" max="1"></progress><div id="work" class="work">—</div></div>
+        <dl class="stats"><div><dt><span data-i18n="Ledger height">Ledger height</span></dt><dd id="height">—</dd></div><div><dt><span data-i18n="Registered providers">Registered providers</span></dt><dd id="providers">—</dd></div></dl>
+        <div class="epoch"><div class="epoch-head"><label for="progress" id="epoch-title"><span data-i18n="Epoch progress">Epoch progress</span></label><span id="percent">—</span></div><progress id="progress" value="0" max="1"></progress><div id="work" class="work">—</div></div>
       </div>
     </section>
+    <section class="panel send-panel" aria-labelledby="send-heading">
+      <div><h2 id="send-heading" data-send-label="Transfer">Transfer</h2>
+        <p data-send-label="Send coins to a public GPUChain wallet address.">Send coins to a public GPUChain wallet address.</p></div>
+      <button type="button" class="send-primary" id="send-open" data-send-label="Send coins">Send coins</button>
+    </section>
     <details class="panel details">
-      <summary>지갑 및 연결 상세<span class="chevron" aria-hidden="true"></span></summary>
+      <summary><span data-i18n="Wallet and connection details">Wallet and connection details</span><span class="chevron" aria-hidden="true"></span></summary>
       <dl class="rows details-list">
-        <div><dt>지갑 거래 순번</dt><dd id="nonce">—</dd></div>
-        <div><dt>네트워크 이름</dt><dd id="network-name">—</dd></div>
-        <div><dt>체인 ID</dt><dd class="mono" id="chain-id">—</dd></div>
-        <div><dt>체크포인트 해시</dt><dd class="mono" id="tip">—</dd></div>
-        <div><dt>원장 접속 주소</dt><dd class="mono" id="ledger">—</dd></div>
-        <div><dt>노드 인스턴스 ID</dt><dd class="mono" id="instance">—</dd></div>
-        <div><dt>프로세스 ID</dt><dd id="pid">—</dd></div>
-        <div><dt>합의 등록 상태</dt><dd id="enrollment">—</dd></div>
-        <div><dt>모델</dt><dd id="model">—</dd></div>
-        <div><dt>컨텍스트 용량</dt><dd id="context">—</dd></div>
-        <div><dt>어댑터 공급 주소</dt><dd class="mono" id="provider-address">—</dd></div>
-        <div><dt>어댑터의 지갑 일치</dt><dd id="same-wallet">—</dd></div>
-        <div><dt>어댑터 공급자 등록</dt><dd id="provider-registered">—</dd></div>
-        <div id="error-row" hidden><dt>최근 오류</dt><dd id="last-error" class="warning-text">—</dd></div>
+        <div><dt><span data-i18n="Wallet nonce">Wallet nonce</span></dt><dd id="nonce">—</dd></div>
+        <div><dt><span data-i18n="Network name">Network name</span></dt><dd id="network-name">—</dd></div>
+        <div><dt><span data-i18n="Chain ID">Chain ID</span></dt><dd class="mono" id="chain-id">—</dd></div>
+        <div><dt><span data-i18n="Checkpoint hash">Checkpoint hash</span></dt><dd class="mono" id="tip">—</dd></div>
+        <div><dt><span data-i18n="Ledger endpoint">Ledger endpoint</span></dt><dd class="mono" id="ledger">—</dd></div>
+        <div><dt><span data-i18n="Node instance ID">Node instance ID</span></dt><dd class="mono" id="instance">—</dd></div>
+        <div><dt><span data-i18n="Process ID">Process ID</span></dt><dd id="pid">—</dd></div>
+        <div><dt><span data-i18n="Committee enrollment">Committee enrollment</span></dt><dd id="enrollment">—</dd></div>
+        <div><dt><span data-i18n="Inference engine">Inference engine</span></dt><dd id="engine">—</dd></div>
+        <div><dt><span data-i18n="Model">Model</span></dt><dd id="model">—</dd></div>
+        <div><dt><span data-i18n="Context capacity">Context capacity</span></dt><dd id="context">—</dd></div>
+        <div><dt><span data-i18n="Adapter wallet address">Adapter wallet address</span></dt><dd class="mono" id="provider-address">—</dd></div>
+        <div><dt><span data-i18n="Adapter wallet match">Adapter wallet match</span></dt><dd id="same-wallet">—</dd></div>
+        <div><dt><span data-i18n="Adapter provider registration">Adapter provider registration</span></dt><dd id="provider-registered">—</dd></div>
+        <div id="error-row" hidden><dt><span data-i18n="Last error">Last error</span></dt><dd id="last-error" class="warning-text">—</dd></div>
       </dl>
+    </details>
+    <details class="panel details">
+      <summary><span data-i18n="Back up or restore this wallet">Back up or restore this wallet</span><span class="chevron" aria-hidden="true"></span></summary>
+      <p class="backup-help"><span data-i18n="Open the backup helper in your GPUChain folder. Choose a password locally and store the encrypted file separately.">Open the backup helper in your GPUChain folder. Choose a password locally and store the encrypted file separately.</span> <code>GPUChain Backup.cmd</code></p>
     </details>
     <span class="sr-only" id="feedback" role="status"></span>
   </main>

@@ -8,6 +8,12 @@
   --line: #dce5e4;
   --mono: "Cascadia Code", Consolas, "Liberation Mono", monospace;
 }
+.top-actions,.lang-control {display:flex;align-items:center;gap:.65rem}
+.top-actions {gap:1rem}
+.lang-control {font-size:.8rem;color:var(--muted)}
+.lang-control select {font:inherit;color:inherit;background:transparent;border:1px solid #92a4a0;border-radius:5px;padding:.25rem}
+.backup-help {padding:.1rem 0 1.2rem;color:var(--muted);font-size:.9rem;line-height:1.6}
+@media(max-width:600px){.lang-control>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.top-actions{gap:.4rem}.network-tag{font-size:.7rem}}
 * {box-sizing:border-box}
 body {margin:0;min-height:100vh}
 .frame {width:min(1060px,calc(100% - 72px));margin:auto}
@@ -145,3 +151,21 @@ details[open] .chevron {transform:rotate(225deg)}
   .balance-info {max-width:85%}
   .chip-art {opacity:.65;width:25%}
 }
+.send-panel {display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:15px}
+.send-panel p,.send-dialog .send-help {font-size:.88rem;color:var(--muted);line-height:1.55;margin:.25rem 0 0}
+.send-primary,.send-secondary {padding:.65rem .95rem;border-radius:7px;font-size:.9rem;font-weight:650;white-space:normal}
+.send-primary {background:#155948;color:#fff}
+.send-secondary {background:#edf2ef;color:#23463a}
+.send-dialog {width:min(32rem,calc(100vw - 2rem));max-height:90vh;overflow:auto;box-sizing:border-box;background:#fff;color:#173029;border:1px solid #c9d9d1;border-radius:14px;padding:1.6rem;box-shadow:0 15px 50px #153c2733}
+.send-dialog::backdrop {background:#112b27a8}
+.send-dialog h2 {font-size:1.35rem;margin:0 0 .8rem}
+.send-dialog h3 {font-size:1.02rem;margin:.4rem 0}
+.send-dialog label {display:block;font-size:.87rem;font-weight:650;margin:.95rem 0 .3rem}
+.send-dialog input {display:block;width:100%;padding:.68rem .75rem;border-radius:7px;border:1px solid #a7bcb2;color:#13372b;background:#fbfcfb;font:inherit}
+.send-dialog input:focus-visible {outline:2px solid #258574;outline-offset:2px}
+.send-dialog dl>div {padding:.4rem 0;border-bottom:1px solid var(--line)}
+.send-dialog dd {margin:.18rem 0 0;overflow-wrap:anywhere;font-size:.91rem;font-variant-numeric:tabular-nums}
+.send-dialog .mono {font-size:.78rem}
+.send-actions {display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem;margin-top:1.2rem}
+.send-dialog .send-feedback {margin:.75rem 0 0;color:#87400e;font-size:.9rem;line-height:1.5;overflow-wrap:anywhere}
+.send-dialog [hidden] {display:none}

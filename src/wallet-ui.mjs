@@ -9,6 +9,8 @@ const assets = [
   ['/', '../ui/wallet/index.html', 'text/html; charset=utf-8'],
   ['/style.css', '../ui/wallet/style.css', 'text/css; charset=utf-8'],
   ['/app.js', '../ui/wallet/app.js', 'text/javascript; charset=utf-8'],
+  ['/send.js', '../ui/wallet/send.js', 'text/javascript; charset=utf-8'],
+  ['/i18n.js', '../ui/wallet/i18n.js', 'text/javascript; charset=utf-8'],
   ['/amount.mjs', './amount.mjs', 'text/javascript; charset=utf-8'],
 ];
 const headers = {
@@ -70,7 +72,7 @@ function overview({status, checkpoint}, sampled) {
     nodeRunsInference:false,
     walletRegistered:state ? state.providers.includes(address) : null,
     adapter:sampled.adapter ?? 'incompatible', providerAddress:null, sameWallet:null,
-    providerRegistered:null, busy:null, inferenceActive:null, model:null, contextWindow:null,
+    providerRegistered:null, busy:null, inferenceActive:null, engine:null, model:null, contextWindow:null,
   };
   const info = sampled.info;
   if (hex64(info?.provider) && hex64(info.chainId)) {
@@ -81,6 +83,7 @@ function overview({status, checkpoint}, sampled) {
         providerRegistered:state ? state.providers.includes(info.provider) : null,
         busy:typeof info.busy === 'boolean' ? info.busy : null,
         inferenceActive:typeof info.inferenceActive === 'boolean' ? info.inferenceActive : null,
+        engine:['strata','ryzenstrata'].includes(info.engine) ? info.engine : null,
         model:MODEL,contextWindow:CONTEXT,
       });
     }
@@ -107,7 +110,18 @@ function overview({status, checkpoint}, sampled) {
   };
 }
 
-export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://127.0.0.1:8789'}) {
+async function readSendBody(req) {
+  const chunks=[];
+  let size=0;
+  for await (const part of req) {
+    size+=part.length;
+    if (size>1024) throw Error('Size limit');
+    chunks.push(part);
+  }
+  return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
+}
+
+export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://127.0.0.1:8789',sender}) {
   if (typeof getSnapshot !== 'function') throw Error('A local checkpoint reader is required');
   const sample = sampler(localProvider(providerUrl));
   const pages = new Map(await Promise.all(assets.map(async ([path,file,type]) =>
@@ -126,7 +140,44 @@ export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://1
           Object.keys(req.headers).some(key=>key === 'forwarded' || key.startsWith('x-forwarded-'))) {
         return error(403,'Local access only');
       }
-      if (req.method !== 'GET') return error(405,'Read-only wallet UI',{allow:'GET'});
+      const sendPath=['/api/send/unlock','/api/send/prepare','/api/send/confirm'].includes(req.url);
+      if (sendPath && sender) {
+        if (req.method!=='POST') return error(405,'Expected POST',{allow:'POST'});
+        const origin='http://'+host;
+        if (req.headers.origin!==origin || (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site']!=='same-origin')) {
+          return error(403,'Requires the local wallet origin');
+        }
+        if (req.headers['content-type']?.split(';')[0].trim().toLowerCase()!=='application/json') {
+          return error(415,'Expected JSON');
+        }
+        if (Number(req.headers['content-length'])>1024) return error(413,'Request is too large');
+        let body;
+        try {body=await readSendBody(req);} catch {return error(400,'Invalid JSON body');}
+        const cookieName='gpuSend'+localPort;
+        const cookieAttrs='; HttpOnly; SameSite=Strict; Path=/api/send';
+        try {
+          if (req.url==='/api/send/unlock') {
+            const {token,csrfToken,expiresAt}=sender.unlock(body,origin);
+            return send(200,'application/json',JSON.stringify({unlocked:true,csrfToken,expiresAt}),{
+              'set-cookie':cookieName+'='+token+cookieAttrs+'; Max-Age=300'
+            });
+          }
+          const cookies=(req.headers.cookie ?? '').split(';').map(item=>item.trim()).filter(item=>item.startsWith(cookieName+'='));
+          const auth={origin,csrfToken:req.headers['x-gpuchain-csrf'],token:cookies.length===1?cookies[0].slice(cookieName.length+1):null};
+          if (req.url==='/api/send/prepare') {
+            return send(200,'application/json',JSON.stringify(await sender.prepare(body,auth)));
+          }
+          return send(200,'application/json',JSON.stringify(await sender.confirm(body,auth)),{
+            'set-cookie':cookieName+'='+cookieAttrs+'; Max-Age=0'
+          });
+        } catch (err) {
+          if (Number.isInteger(err.status) && typeof err.code==='string') {
+            return send(err.status,'application/json',JSON.stringify({error:err.message,code:err.code}));
+          }
+          return error(503,'Local wallet action unavailable');
+        }
+      }
+      if (req.method !== 'GET') return error(405,'Expected GET',{allow:'GET'});
       if (req.url === '/api/overview') {
         if (req.headers['sec-fetch-site'] === 'cross-site') return error(403,'Local access only');
         const [snapshot,provider] = await Promise.all([getSnapshot(),sample()]);

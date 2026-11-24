@@ -30,7 +30,8 @@ async function setup(t) {
       });
       s.listen(0,'127.0.0.1');
       await once(s,'listening');
-      return {url:'http://127.0.0.1:'+s.address().port,close:()=>new Promise(r=>s.close(r))};
+      return {url:'http://127.0.0.1:'+s.address().port,issueUnlock:()=>({code:'0123456789',expiresAt:Date.now()+120000}),
+        close:()=>new Promise(r=>s.close(r))};
     }
   `);
   async function run(...args) {
@@ -59,6 +60,11 @@ test('background command outlives the launcher, serializes concurrent starts and
   assert.ok(!JSON.stringify(status).includes(privateDescriptor.key));
   const denied = await fetch('http://127.0.0.1:'+privateDescriptor.port+'/stop',{method:'POST'});
   assert.equal(denied.status,403);
+  const deniedUnlock = await fetch('http://127.0.0.1:'+privateDescriptor.port+'/unlock',{method:'POST'});
+  assert.equal(deniedUnlock.status,403);
+  const pairing=await run('unlock');
+  assert.match(pairing.code,/^[0-9]{10}$/);
+  assert.ok(!JSON.stringify(await run('status')).includes(pairing.code));
   assert.equal((await run('status')).running,true);
   assert.deepEqual(await run('stop'),{running:false});
   assert.equal((await run('status')).running,false);

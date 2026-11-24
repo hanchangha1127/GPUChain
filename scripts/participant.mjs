@@ -55,8 +55,10 @@ async function control(op) {
     throw Error('Invalid participant process descriptor');
   }
   const nonce = randomBytes(16).toString('hex');
+  const issued=String(Date.now());
+  const proof=op==='unlock' ? ['request',op,nonce,issued] : ['request',op,nonce];
   const reply = await requestJson('http://127.0.0.1:'+port+'/'+op,{
-    method:'POST',headers:{'x-gpuchain-nonce':nonce,'x-gpuchain-auth':mac(key,['request',op,nonce])},
+    method:'POST',headers:{'x-gpuchain-nonce':nonce,'x-gpuchain-auth':mac(key,proof),'x-gpuchain-time':issued},
     timeoutMs:op === 'stop' ? startupLimit : 5000,maxBytes:32768
   });
   if (!equalMac(reply.auth,mac(key,['response',op,nonce,reply.state]))) {
@@ -77,6 +79,7 @@ async function daemon() {
   const key = randomBytes(32).toString('hex');
   const temp = descriptor+'.'+randomBytes(8).toString('hex')+'.tmp';
   let node, starting, closing, published = false;
+  const unlockNonces=new Map();
   async function state() {
     if (!node) return {running:true,starting:true,pid:process.pid};
     const s = await requestJson(node.url+'/v1/status',{timeoutMs:4000});
@@ -89,12 +92,26 @@ async function daemon() {
   const server = createServer(async (req,res) => {
     const op = req.url?.slice(1);
     const nonce = req.headers['x-gpuchain-nonce'];
-    if (req.method !== 'POST' || !['status','stop'].includes(op) || typeof nonce !== 'string' ||
-        !/^[a-f0-9]{32}$/.test(nonce) || !equalMac(req.headers['x-gpuchain-auth'],mac(key,['request',op,nonce]))) {
+    const issued=req.headers['x-gpuchain-time'];
+    const proof=op==='unlock' ? ['request',op,nonce,issued] : ['request',op,nonce];
+    if (req.method !== 'POST' || !['status','stop','unlock'].includes(op) || typeof nonce !== 'string' ||
+        !/^[a-f0-9]{32}$/.test(nonce) || !equalMac(req.headers['x-gpuchain-auth'],mac(key,proof))) {
       res.writeHead(403); res.end(); return;
     }
     try {
-      const result = op === 'stop' ? await stop() : await state();
+      let result;
+      if (op==='unlock') {
+        const now=Date.now();
+        for (const [n,until] of unlockNonces) if(until<=now) unlockNonces.delete(n);
+        if (!/^[0-9]{13}$/.test(issued) || Math.abs(now-Number(issued))>=10_000 ||
+          unlockNonces.has(nonce) || unlockNonces.size>=32 || req.headers.origin || req.headers.forwarded ||
+          Object.keys(req.headers).some(k=>k.startsWith('x-forwarded-'))) {
+          res.writeHead(403); res.end(); return;
+        }
+        unlockNonces.set(nonce,now+21_000);
+        if (!node || closing || !node.issueUnlock) { res.writeHead(503);res.end('Wallet unavailable');return; }
+        result={...node.issueUnlock(),guiUrl:node.guiUrl};
+      } else result = op === 'stop' ? await stop() : await state();
       res.writeHead(200,{'content-type':'application/json','cache-control':'no-store','connection':'close'});
       res.end(JSON.stringify({state:result,auth:mac(key,['response',op,nonce,result])}));
     } catch {
@@ -162,6 +179,10 @@ async function launch() {
 }
 
 async function manage(op) {
+  if (op==='unlock') {
+    if (!active()) throw Error('Start the managed GPUChain wallet before unlocking');
+    return control('unlock');
+  }
   if (op === 'start') mkdirSync(directory,{recursive:true,mode:0o700});
   const deadline = Date.now()+startupLimit;
   do {
@@ -187,11 +208,11 @@ async function manage(op) {
 
 try {
   const args = process.argv.slice(2);
-  if (args.length > 1) throw Error('Usage: node scripts/participant.mjs start|status|stop');
+  if (args.length > 1) throw Error('Usage: node scripts/participant.mjs start|status|stop|unlock');
   const command = args[0] ?? 'start';
   if (command === '--daemon' && process.send) await daemon();
-  else if (['start','status','stop'].includes(command)) console.log(JSON.stringify(await manage(command)));
-  else throw Error('Usage: node scripts/participant.mjs start|status|stop');
+  else if (['start','status','stop','unlock'].includes(command)) console.log(JSON.stringify(await manage(command)));
+  else throw Error('Usage: node scripts/participant.mjs start|status|stop|unlock');
 } catch (err) {
   console.error(err.message);
   process.exitCode = 1;

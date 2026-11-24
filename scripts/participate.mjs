@@ -6,6 +6,7 @@ import { publicGenesis, resolvePublicLedger } from '../src/public-network.mjs';
 import { startValidator } from '../src/validator.mjs';
 import { enrollAt } from '../src/validator-enroll.mjs';
 import { startWalletUi } from '../src/wallet-ui.mjs';
+import { createWalletSender } from '../src/wallet-send.mjs';
 
 export async function startParticipant() {
   const {dir,wallet,port,origin} = await participantConfig();
@@ -18,8 +19,9 @@ export async function startParticipant() {
     discover:origin ? ({instanceId,ledgerUrl}) => enrollAt(ledgerUrl,publicGenesis.hash,wallet,origin,instanceId) : undefined,
   });
   let gui;
+  const sender=createWalletSender({wallet});
   try {
-    const options = {getSnapshot:node.snapshot,port:Number(guiPort),providerUrl:process.env.GPUCHAIN_LOCAL_PROVIDER_URL};
+    const options = {getSnapshot:node.snapshot,port:Number(guiPort),providerUrl:process.env.GPUCHAIN_LOCAL_PROVIDER_URL,sender};
     try { gui = await startWalletUi(options); }
     catch (err) {
       if (err.code !== 'EADDRINUSE' || process.env.GPUCHAIN_WALLET_PORT !== undefined) throw err;
@@ -29,7 +31,7 @@ export async function startParticipant() {
     await node.close();
     throw err;
   }
-  return {url:node.url,guiUrl:gui.url,async close() {
+  return {url:node.url,guiUrl:gui.url,issueUnlock:sender.issueCode,async close() {
     try { await gui.close(); } finally { await node.close(); }
   }};
 }
