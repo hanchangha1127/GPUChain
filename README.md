@@ -2,11 +2,21 @@
 
 [English](README.md) · [简体中文](docs/README.zh-CN.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Français](docs/README.fr.md)
 
-GPUChain is an **experimental, unfinished inference-credit network** for Qwen3.8-Flash-Next. A provider runs RYZENStrata on its own hardware and earns coins for serving text requests. Wallet holders can transfer earned coins or spend them on another provider, including while their own GPU is offline. The current implementation has one signing sequencer, registered providers and read-only follower nodes. [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+GPUChain is an **experimental, unfinished inference-credit network** for Qwen3.8-Flash-Next. A provider runs RYZENStrata on its own hardware and earns coins for serving text requests. Wallet holders can transfer earned coins or spend them on another provider, including while their own GPU is offline. Sites runs the initial public ledger and can automatically hand transaction settlement to participating validators. [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
-**Start a local network** with `node scripts/bootstrap.mjs` from this checkout using Node.js 24 or newer. The bootstrap creates the local wallets and genesis on first use, then starts the sequencer and provider adapter. The installation guide covers RYZENStrata setup and joining an existing network. [Agent setup guide](AGENTS.md)
+**Join the public testnet.** Give this repository URL to an agent, or run `npm start` from a checkout with Node.js 24 or later. The client verifies the ledger against the bundled genesis, probes inference providers, prints the endpoint and result, and exits. A wallet and GPU are optional for this check. [Agent setup guide](AGENTS.md) · [Testnet endpoints and operations](hosting/sites/README.md)
 
-The **public testnet** operates a GPU-free sequencer on Sites. To join this network, use the pinned genesis in this checkout and the hosted ledger URL. The local bootstrap creates a separate network. [Live node](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site) · [Connect to the testnet](hosting/sites/README.md)
+`node src/cli.mjs verify`, `node src/cli.mjs status` and `node src/cli.mjs routes` also select the public testnet by default. The chain ID stays the same when its hosts change. Use `node scripts/bootstrap.mjs` to create an independent local development network with demo wallets, a sequencer and a provider adapter.
+
+## Participant-operated ledger
+
+Registered provider wallet owners can volunteer to validate transactions, including while their inference GPU is offline. Run the command below with the registered wallet and a public HTTPS origin forwarding to local port 8790. Keep the validator online with the same durable data directory.
+
+~~~powershell
+node src/cli.mjs validator --wallet provider.wallet.json --dir .local/public-validator --origin https://validator.example.org
+~~~
+
+Sites certifies three distinct ready validators after checking their signed opt-ins, database identities, and published endpoints. It atomically closes its writer at the final checkpoint. The same wallets and balances continue under the fixed committee. Two of three validators must be online, able to communicate, and retain their voting state for new transactions to settle. Readers verify the activation and majority signatures. The protocol tolerates one offline member and assumes validators follow the protocol. A fresh install can discover the published validator URLs after Sites is offline. [Public testnet operations](hosting/sites/README.md)
 
 ## Metering and epochs
 
@@ -22,7 +32,7 @@ The rates follow the numerical values of the International API tariff. Balances 
 
 An epoch closes every **1,000,000,000 uncached input plus output tokens** across all providers. The sequencer can schedule a new per-request output limit for the next epoch. The crossing request settles under the existing limit and excess tokens carry forward. The transaction height advances for each accepted operation. The epoch number advances only at the billion-token boundary.
 
-## Run on Windows
+## Run an independent local network on Windows
 
 Use Node.js 24 or newer. Run each PowerShell block from this repository's root. The ledger, wallet, client and provider adapter use Node's built-in modules. Only the provider needs a running RYZENStrata installation, with the Qwen model loaded and `/v1/models` available. The default backend is `http://127.0.0.1:8000/v1` and the default model ID is `qwen3.8-flash-next-q2_0`. Use `--strata` and `--model-id` if your deployment differs. Set `STRATA_API_KEY` in the provider process environment if the backend requires authentication.
 
@@ -89,7 +99,7 @@ The requester signs the provider address, prompt hash, nonce and token limits. T
 
 The sequencer validates the spend and updates SQLite atomically. The database retains the latest balances, nonces, configuration, counters and chain tip, plus one 32-byte digest per completed epoch. Transaction bodies and individual receipts are transient. Prompts and responses travel between the requester and its provider. The provider can see the prompt. A provider process briefly caches its latest response in memory for retries.
 
-Followers verify the sequencer's signed checkpoint against a pinned genesis. Historical transaction replay from the pruned database is unavailable. The design trusts the sequencer for ordering and checkpoint integrity, and trusts the two parties' metering attestations. Independent proof of GPU execution and permissionless consensus are open work. Payment requires the requester's final signature. A disconnect or refusal before settlement can leave a completed inference unpaid.
+Followers verify checkpoints against the pinned genesis, using the sequencer signature during bootstrap and a validator majority after activation. The pruned database retains current state and epoch hashes. Replaying historical transactions would require their original records. Metering trusts the two parties' attestations. Independent proof of GPU execution and permissionless validator membership remain open work. Payment requires the requester's final signature. A disconnect or refusal before settlement can leave a completed inference unpaid.
 
 ## Tests and license
 

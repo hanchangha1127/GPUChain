@@ -4,35 +4,44 @@ import { once } from 'node:events';
 import { parseArgs } from 'node:util';
 import { addressFromPrivateKey, generateWallet, sign, verify, hash } from './crypto.mjs';
 import { applyBlock, charge, CONTEXT, createGenesis, EPOCH_TOKENS, MODEL, replay, verifyBlock } from './ledger.mjs';
-import { readVerifiedState, startNode } from './node.mjs';
+import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
 import { requestJson } from './http.mjs';
 import { rankProviders } from './routing.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
+import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
+import { verifyConsensusAck } from './consensus.mjs';
+import { verifyAdvance } from './checkpoint.mjs';
+import { startValidator } from './validator.mjs';
+import { enrollAt } from './validator-enroll.mjs';
 
 const usage = `GPUChain
   wallet   --out FILE
   genesis  --wallet SEQUENCER_KEY --out FILE --allocation ADDRESS=COINS
            [--allocation ADDRESS=COINS ...] [--provider ADDRESS ...] [--max-output N]
-  node     --genesis FILE --wallet SEQUENCER_KEY --dir DIR [--listen HOST] [--port 8787]
-  follower --genesis FILE --upstream URL --dir DIR [--listen HOST] [--port 8788]
-  provider --genesis FILE --wallet PROVIDER_KEY [--ledger URL] [--strata URL] [--model-id ID]
+  node     --genesis PRIVATE_NETWORK_FILE --wallet SEQUENCER_KEY --dir DIR [--listen HOST] [--port 8787]
+  validator --wallet REGISTERED_KEY --origin HTTPS_URL --dir DIR [--genesis FILE] [--ledger URL]
+            [--listen HOST] [--port 8790]
+  follower --dir DIR [--genesis FILE] [--upstream URL] [--listen HOST] [--port 8788]
+  provider --wallet PROVIDER_KEY [--genesis FILE] [--ledger URL] [--strata URL] [--model-id ID]
            [--listen HOST] [--port 8789]   (optional backend credential: STRATA_API_KEY)
-  status | verify   --genesis FILE [--ledger URL]
-  balance  --genesis FILE --address ADDRESS [--ledger URL]
-  transfer --genesis FILE --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL]
-  routes   --genesis FILE [--ledger URL] [--max-output N] [--wallet KEY]
-  chat     --genesis FILE --wallet KEY [--provider-url URL --provider-address ADDRESS]
+  status | verify   [--genesis FILE] [--ledger URL]
+  balance  [--genesis FILE] --address ADDRESS [--ledger URL]
+  transfer [--genesis FILE] --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL]
+  routes   [--genesis FILE] [--ledger URL] [--max-output N] [--wallet KEY]
+  chat     [--genesis FILE] --wallet KEY [--provider-url URL --provider-address ADDRESS]
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
   settings --genesis FILE --wallet SEQUENCER_KEY --max-output N [--ledger URL]
   add-provider --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS [--url URL] [--ledger URL]
   set-provider-endpoint --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS (--url URL | --withdraw) [--ledger URL]
-Ledger defaults to http://127.0.0.1:8787. Strata defaults to http://127.0.0.1:8000/v1.`;
+Client commands default to the pinned public testnet and discover its ledger endpoints.
+Custom genesis files default to http://127.0.0.1:8787. Strata defaults to http://127.0.0.1:8000/v1.`;
 
 const flags = {
   wallet: ['out'],
   genesis: ['wallet','out','allocation','provider','max-output'],
   node: ['genesis','wallet','dir','listen','port'],
+  validator: ['genesis','ledger','wallet','origin','dir','listen','port'],
   follower: ['genesis','upstream','dir','listen','port','sync-ms'],
   provider: ['genesis','wallet','ledger','strata','model-id','listen','port'],
   status: ['genesis','ledger'], verify: ['genesis','ledger'],
@@ -116,10 +125,21 @@ async function walletFrom(values) {
 }
 
 // Check the transient sequencer acknowledgment without fetching pruned transaction history.
-async function submit(base, state, payload, wallet, providerSignature) {
+async function submit(ledger, payload, wallet, providerSignature) {
+  const {url:base,state,checkpoint} = ledger;
   const tx = { payload, signature:sign(wallet.privateKey, payload) };
   if (providerSignature) tx.providerSignature = providerSignature;
-  const { block } = await requestJson(base + '/v1/transactions', {body:tx});
+  const reply = await requestJson(base + '/v1/transactions', {body:tx,maxBytes:64*1024*1024});
+  if (checkpoint.authority || reply.checkpoint?.authority) {
+    verifyConsensusAck(reply,tx,checkpoint.genesis,checkpoint.authority);
+    if (reply.block.height <= state.height) throw Error('Outdated consensus acknowledgement');
+    verifyAdvance(checkpoint,reply.checkpoint);
+    if (reply.block.height === state.height+1 && reply.block.previousHash !== state.tip) {
+      throw Error('Receipt does not extend the last verified checkpoint');
+    }
+    return {height:reply.block.height,hash:reply.block.hash};
+  }
+  const {block} = reply;
   if (!block || hash(block.payload) !== hash(tx) || !Number.isSafeInteger(block.height) ||
       block.height <= state.height) throw Error('Ledger returned an unexpected transaction');
   if (block.height === state.height + 1) {
@@ -134,7 +154,8 @@ function nextNonce(state, from) {
   return (state.nonces[from] || 0) + 1;
 }
 
-async function chat(v, wallet, base, state) {
+async function chat(v, wallet, ledger, resolveSettlement) {
+  const {url:base,state} = ledger;
   if ((v['provider-url'] === undefined) !== (v['provider-address'] === undefined)) {
     throw Error('To pin a provider, supply both --provider-url and --provider-address');
   }
@@ -176,7 +197,11 @@ async function chat(v, wallet, base, state) {
     requestHash:hash(request), responseHash:hash(message), inputTokens, cachedTokens, outputTokens
   };
   if (hash(payload) !== hash(expected) || !verify(provider,expected,providerSignature)) throw Error('Invalid provider receipt');
-  const settlement = await submit(base,state,expected,wallet,providerSignature);
+  const targetLedger = resolveSettlement ? await resolveSettlement() : ledger;
+  if (nextNonce(targetLedger.state,wallet.address) !== request.nonce) {
+    throw Error('Wallet nonce changed during inference; receipt could not be settled');
+  }
+  const settlement = await submit(targetLedger,expected,wallet,providerSignature);
   return { provider, providerUrl:url, latencyMs:target.latencyMs, message,
     usage:{inputTokens,cachedTokens,outputTokens}, coins:coins(charge(expected)), settlement };
 }
@@ -223,13 +248,38 @@ async function main() {
     await writeNew(required(v,'out'),genesis);
     return print({chainId:genesis.hash});
   }
-  const genesis = await readObject(required(v,'genesis'));
+  if (command === 'node') required(v,'genesis');
+  const genesis = v.genesis ? await readObject(v.genesis) : publicGenesis;
   replay([genesis],genesis.hash);
-  const base = endpoint(v.ledger || 'http://127.0.0.1:8787');
+  const publicNetwork = genesis.hash === publicGenesis.hash;
+  const discover = publicNetwork && v.ledger === undefined;
+  const fixed = v.ledger ? endpoint(v.ledger) : 'http://127.0.0.1:8787';
   const listen = v.listen || '127.0.0.1';
+  if (command === 'validator') {
+    const wallet = await walletFrom(v);
+    const origin = normalizeProviderEndpoint(required(v,'origin'));
+    const validator = await startValidator({dir:required(v,'dir'),genesis,wallet,origin,listen,
+      port:uint(v.port ?? 8790,'port',0,65535),
+      discover:async ({instanceId}) => {
+        const selected = discover ? await resolvePublicLedger({activation:true}) :
+          {checkpoint:await readCheckpoint(fixed,genesis.hash),url:fixed};
+        if (selected.checkpoint.authority) return selected.checkpoint;
+        return enrollAt(selected.url,genesis.hash,wallet,origin,instanceId);
+      }
+    });
+    return serving(validator.url,() => validator.close());
+  }
   if (command === 'node' || command === 'follower') {
-    const opts = command === 'node' ? {wallet:await walletFrom(v)} :
-      {upstream:endpoint(required(v,'upstream')),syncIntervalMs:uint(v['sync-ms'] ?? 5000,'sync-ms',100,3600000)};
+    let opts;
+    if (command === 'node') {
+      if (publicNetwork) throw Error('Run validator to participate in public testnet consensus');
+      opts = {wallet:await walletFrom(v)};
+    } else {
+      opts = publicNetwork && !v.upstream
+        ? {resolveUpstreamCheckpoint:async () => (await resolvePublicLedger()).checkpoint}
+        : {upstream:endpoint(required(v,'upstream'))};
+      opts.syncIntervalMs = uint(v['sync-ms'] ?? 5000,'sync-ms',100,3600000);
+    }
     const node = await startNode({dir:required(v,'dir'),genesis,...opts,listen,
       port:uint(v.port ?? (command === 'node' ? 8787 : 8788),'port',0,65535)});
     return serving(node.url,() => node.close());
@@ -237,7 +287,8 @@ async function main() {
   if (command === 'provider') {
     const port = uint(v.port ?? 8789,'port',0,65535);
     const srv = await createProviderServer({
-      wallet:await walletFrom(v), chainId:genesis.hash, ledgerUrl:base,
+      wallet:await walletFrom(v), chainId:genesis.hash, ledgerUrl:fixed,
+      readState:discover ? async () => (await resolvePublicLedger({write:true})).state : readVerifiedState,
       strataUrl:endpoint(v.strata || 'http://127.0.0.1:8000/v1'),
       modelId:v['model-id'],apiKey:process.env.STRATA_API_KEY
     });
@@ -247,24 +298,32 @@ async function main() {
     return serving(`http://${host}:${srv.address().port}`,() => new Promise((resolve,reject) =>
       srv.close(err => err ? reject(err) : resolve())));
   }
-  const state = await readVerifiedState(base,genesis.hash);
+  const write = !['verify','status','routes','balance'].includes(command);
+  const ledger = discover ? await resolvePublicLedger({write}) :
+    {url:fixed,checkpoint:await readCheckpoint(fixed,genesis.hash)};
+  const {url:base,checkpoint} = ledger;
+  const state = ledger.state = checkpoint.state;
   if (command === 'routes') {
     const maxOutputTokens = uint(v['max-output'] ?? 1,'max-output',1,state.maxOutputTokens);
     const payer = v.wallet ? (await walletFrom(v)).address : undefined;
     return print({providers:await rankProviders(state,{payer,ledgerUrl:base,maxOutputTokens})});
   }
-  if (command === 'verify') return print({verified:true,scope:'signed-checkpoint',chainId:state.chainId,height:state.height,tip:state.tip});
+  if (command === 'verify') return print({verified:true,scope:checkpoint.authority ? 'validator-consensus' : 'signed-checkpoint',
+    chainId:state.chainId,height:state.height,tip:state.tip});
   if (command === 'status') {
     const {chainId,height,tip,epoch,epochTokens,totalWorkTokens,maxOutputTokens,pendingMaxOutputTokens,providers} = state;
     return print({chainId,height,tip,epoch,epochTokens,epochSizeTokens:EPOCH_TOKENS,totalWorkTokens,
-      maxOutputTokens,pendingMaxOutputTokens,providers});
+      maxOutputTokens,pendingMaxOutputTokens,providers,consensus:checkpoint.authority
+        ? {mode:'validator',threshold:2,validators:checkpoint.authority.payload.validators}
+        : {mode:'bootstrap'}});
   }
   if (command === 'balance') {
     const addr = address(required(v,'address'));
     return print({address:addr,coins:coins(state.balances[addr] || 0),nonce:state.nonces[addr] || 0});
   }
   const wallet = await walletFrom(v);
-  if (command === 'chat') return print(await chat(v,wallet,base,state));
+  if (command === 'chat') return print(await chat(v,wallet,ledger,
+    discover ? () => resolvePublicLedger({write:true}) : undefined));
   const common = {chainId:state.chainId,from:wallet.address,nonce:nextNonce(state,wallet.address)};
   let details;
   if (command === 'transfer') {
@@ -278,7 +337,7 @@ async function main() {
   } else {
     details = {maxOutputTokens:uint(required(v,'max-output'),'max-output',1,CONTEXT)};
   }
-  print(await submit(base,state,{type:command,...common,...details},wallet));
+  print(await submit(ledger,{type:command,...common,...details},wallet));
 }
 
 main().catch(err => { console.error(err.message); process.exitCode = 1; });

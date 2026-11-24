@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { addressFromPrivateKey, hash } from './crypto.mjs';
 import { EPOCH_TOKENS, replay } from './ledger.mjs';
 
-import { authenticate, nextCheckpoint } from './checkpoint.mjs';
+import { authenticate, nextCheckpoint, verifyAdvance } from './checkpoint.mjs';
 
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
@@ -34,7 +34,7 @@ function ledgerOrigin(endpoint) {
   return url.origin;
 }
 
-async function readCheckpoint(url, chainId) {
+export async function readCheckpoint(url, chainId) {
   check(typeof chainId === 'string' && HEX.test(chainId), 'A pinned genesis hash is required');
   const res = await fetch(ledgerOrigin(url) + '/v1/checkpoint', {
     redirect:'error', signal:AbortSignal.timeout(30_000)
@@ -66,24 +66,32 @@ function openStore(dir, genesis) {
       CREATE TABLE IF NOT EXISTS epoch (number INTEGER PRIMARY KEY, digest BLOB NOT NULL);
     `);
     const genesisState = replay([genesis], genesis.hash);
-    db.prepare('INSERT OR IGNORE INTO current_state VALUES (1, ?, NULL)').run(JSON.stringify(genesisState));
-    const read = db.prepare('SELECT state, signature FROM current_state WHERE id=1');
+    if (!db.prepare("PRAGMA table_info(current_state)").all().some(column => column.name === 'certificates')) {
+      db.exec('ALTER TABLE current_state ADD COLUMN certificates TEXT');
+    }
+    db.prepare('INSERT OR IGNORE INTO current_state(id,state,signature) VALUES (1, ?, NULL)').run(JSON.stringify(genesisState));
+    const read = db.prepare('SELECT state, signature, certificates FROM current_state WHERE id=1');
     const readEpochs = db.prepare('SELECT digest FROM epoch ORDER BY number');
-    const update = db.prepare('UPDATE current_state SET state=?, signature=? WHERE id=1');
+    const update = db.prepare('UPDATE current_state SET state=?, signature=?, certificates=? WHERE id=1');
     const addEpoch = db.prepare('INSERT INTO epoch VALUES (?, ?)');
     function current() {
       const row = read.get();
-      return {genesis, state:JSON.parse(row.state), signature:row.signature,
+      return {genesis, ...JSON.parse(row.certificates ?? '{}'), state:JSON.parse(row.state), signature:row.signature,
         epochHashes:readEpochs.all().map(row => Buffer.from(row.digest).toString('hex'))};
     }
     function save(prior, next) {
       db.exec('BEGIN IMMEDIATE');
       try {
-        check(JSON.parse(read.get().state).tip === prior.state.tip, 'Ledger advanced concurrently; retry');
+        const row = read.get();
+        const previousCertificates = JSON.parse(row.certificates ?? '{}');
+        check(JSON.parse(row.state).tip === prior.state.tip &&
+          hash(previousCertificates.authority ?? null) === hash(prior.authority ?? null),
+        'Ledger advanced concurrently; retry');
         for (let i = prior.epochHashes.length; i < next.epochHashes.length; i++) {
           addEpoch.run(i + 1, Buffer.from(next.epochHashes[i], 'hex'));
         }
-        update.run(JSON.stringify(next.state), next.signature);
+        update.run(JSON.stringify(next.state), next.signature, next.authority
+          ? JSON.stringify({authority:next.authority,consensus:next.consensus}) : null);
         db.exec('COMMIT');
       } catch (err) {
         db.exec('ROLLBACK');
@@ -102,8 +110,10 @@ function openStore(dir, genesis) {
 }
 
 export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', port = 8787,
-  upstream, syncIntervalMs = 5000}) {
-  check(Boolean(wallet) !== Boolean(upstream), 'Specify a sequencer wallet or a follower upstream');
+  upstream, resolveUpstreamCheckpoint, syncIntervalMs = 5000}) {
+  const follower = Boolean(upstream || resolveUpstreamCheckpoint);
+  check(Boolean(wallet) !== follower && !(upstream && resolveUpstreamCheckpoint),
+    'Specify a sequencer wallet or one follower upstream');
   if (wallet) check(wallet.address === genesis.payload.sequencer &&
     addressFromPrivateKey(wallet.privateKey) === wallet.address, 'Incorrect sequencer key');
   if (upstream) ledgerOrigin(upstream);
@@ -113,22 +123,17 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
   let closed = false;
   let syncError = null;
   async function advanceFollower() {
-    const next = await readCheckpoint(upstream, genesis.hash);
-    check(next.state.height >= head.state.height && next.state.epoch >= head.state.epoch &&
-      next.state.totalWorkTokens >= head.state.totalWorkTokens, 'Upstream checkpoint rollback');
-    check(head.epochHashes.every((digest, i) => next.epochHashes[i] === digest),
-      'Upstream conflicts with a finalized epoch');
-    if (next.state.height === head.state.height) {
-      check(hash(next) === hash(head), 'Conflicting checkpoint at the same height');
-      return;
-    }
+    const next = resolveUpstreamCheckpoint ? authenticate(await resolveUpstreamCheckpoint(), genesis.hash)
+      : await readCheckpoint(upstream, genesis.hash);
+    verifyAdvance(head, next);
+    if (next.state.tip === head.state.tip && Boolean(next.authority) === Boolean(head.authority)) return;
     if (!closed) {
       save(head, next);
       head = next;
     }
   }
   async function sync() {
-    if (!upstream || closed) return;
+    if (!follower || closed) return;
     if (!syncing) syncing = advanceFollower().then(() => { syncError = null; }).catch(err => {
       syncError = err.message;
       throw err;
@@ -147,11 +152,12 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
       res.end(JSON.stringify(value));
     }
     try {
+      if (req.method === 'GET' && req.url === '/v1/genesis') return send(200, genesis);
       if (req.method === 'GET' && req.url === '/v1/checkpoint') return send(200, head);
       if (req.method === 'GET' && req.url === '/v1/status') {
         const {chainId, tip, height, providers, epoch, epochTokens, maxOutputTokens} = head.state;
         return send(200, {chainId, tip, height, providers, epoch, epochTokens, maxOutputTokens,
-          epochTarget:EPOCH_TOKENS, mode:upstream ? 'follower' : 'sequencer', syncError});
+          epochTarget:EPOCH_TOKENS, mode:follower ? 'follower' : 'sequencer', syncError});
       }
       if (req.method !== 'POST' || req.url !== '/v1/transactions') return send(404, {error:'Route not found'});
       if (!wallet) return send(403, {error:'Read-only follower'});
@@ -168,7 +174,7 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
   try {
-    if (upstream) await sync();
+    if (follower) await sync();
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, listen, () => { server.off('error', reject); resolve(); });
@@ -177,7 +183,7 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
     db.close();
     throw err;
   }
-  const interval = upstream ? setInterval(() => { sync().catch(() => {}); }, syncIntervalMs) : undefined;
+  const interval = follower ? setInterval(() => { sync().catch(() => {}); }, syncIntervalMs) : undefined;
   const url = 'http://' + (listen.includes(':') ? '[' + listen + ']' : listen) + ':' + server.address().port;
   return {url, sync, async close() {
     if (closed) return;

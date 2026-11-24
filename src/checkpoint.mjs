@@ -1,45 +1,43 @@
-import { hash, sign, verify } from './crypto.mjs';
-import { applyBlock, createBlock, replay } from './ledger.mjs';
-
-const HEX = /^[0-9a-f]{64}$/;
-
-function check(ok, reason) {
-  if (!ok) throw Error(reason);
-}
-
-function checkpointProof(state, epochHashes) {
-  return {domain:'gpuchain/checkpoint/v1', stateHash:hash(state), epochsHash:hash(epochHashes)};
-}
+import { hash, sign } from './crypto.mjs';
+import { applyBlock, createBlock } from './ledger.mjs';
+import { authenticateLegacy, checkpointProof, updatedEpochHashes } from './checkpoint-base.mjs';
+import { verifyConsensusCheckpoint } from './consensus.mjs';
 
 export function authenticate(checkpoint, chainId) {
-  const {genesis, state, epochHashes, signature} = checkpoint;
-  const initial = replay([genesis], chainId);
-  check(state.chainId === initial.chainId && state.sequencer === initial.sequencer,
-    'Unexpected checkpoint identity');
-  check(Array.isArray(epochHashes) && epochHashes.length === state.epoch &&
-    epochHashes.every(value => typeof value === 'string' && HEX.test(value)), 'Invalid epoch hashes');
-  if (state.height === 0) {
-    check(signature === null && hash(initial) === hash(state), 'Invalid initial checkpoint');
-  } else {
-    check(Number.isSafeInteger(state.height) && state.height > 0 &&
-      verify(initial.sequencer, checkpointProof(state, epochHashes), signature),
-    'Invalid checkpoint signature');
+  if (Object.hasOwn(checkpoint,'authority') || Object.hasOwn(checkpoint,'consensus')) {
+    return verifyConsensusCheckpoint(checkpoint,chainId);
   }
-  return checkpoint;
+  return authenticateLegacy(checkpoint,chainId);
 }
 
-// Construct the signed candidate; the caller acknowledges it only after an atomic commit.
+// Both checkpoints must already have been authenticated. Two majorities may certify
+// one value with different ballots or vote subsets without creating a fork.
+export function verifyAdvance(prior,next) {
+  const old = prior.state, state = next.state;
+  if (old.chainId !== state.chainId || state.height < old.height ||
+      state.totalWorkTokens < old.totalWorkTokens ||
+      !prior.epochHashes.every((digest,i) => digest === next.epochHashes[i])) throw Error('Upstream checkpoint rollback or epoch conflict');
+  if (prior.authority && (!next.authority || hash(next.authority) !== hash(prior.authority))) {
+    throw Error('Consensus authority downgrade or conflict');
+  }
+  if (!prior.authority && next.authority) {
+    const {anchorHeight,anchorHash} = next.authority.payload;
+    if (old.height > anchorHeight || (old.height === anchorHeight && hash(prior) !== anchorHash)) {
+      throw Error('Legacy checkpoint conflicts with consensus activation');
+    }
+  }
+  if (old.height === state.height && (hash(old) !== hash(state) || prior.epochHashes.length !== next.epochHashes.length)) {
+    throw Error('Conflicting checkpoint at the same height');
+  }
+  return next;
+}
+
 export function nextCheckpoint(head, tx, wallet) {
+  if (head.authority) throw Error('The activated network requires validator votes');
   const {genesis} = head;
   const block = createBlock(head.state, tx, wallet);
   const state = applyBlock(head.state, block);
-  let epochHashes = head.epochHashes;
-  if (state.epoch > head.state.epoch) {
-    const digest = hash({domain:'gpuchain/epoch/v1', previous:epochHashes.at(-1) ?? genesis.hash,
-      epoch:state.epoch, tip:state.tip, stateHash:hash(state)});
-    epochHashes = [...epochHashes, digest];
-  }
-  const next = {genesis, state, epochHashes,
-    signature:sign(wallet.privateKey, checkpointProof(state, epochHashes))};
+  const epochHashes = updatedEpochHashes(head,state);
+  const next = {genesis, state, epochHashes,signature:sign(wallet.privateKey, checkpointProof(state, epochHashes))};
   return {block, next};
 }

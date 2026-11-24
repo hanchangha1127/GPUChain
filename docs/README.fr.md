@@ -2,9 +2,19 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
-GPUChain est un **réseau expérimental de crédits d’inférence, encore en développement**, pour Qwen3.8-Flash-Next. En exécutant RYZENStrata sur votre matériel, vous gagnez des crédits lorsque vous traitez les requêtes d’autres utilisateurs. Vous pouvez ensuite transférer ces crédits ou les dépenser auprès d’un autre fournisseur, même si votre GPU est éteint. Le réseau actuel comprend un séquenceur qui signe l’état du registre, des fournisseurs agréés et des nœuds suiveurs en lecture seule. [Projet RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
+GPUChain est un **réseau expérimental de crédits d’inférence, encore en développement**, pour Qwen3.8-Flash-Next. En exécutant RYZENStrata sur votre matériel, vous gagnez des crédits lorsque vous traitez les requêtes d’autres utilisateurs. Vous pouvez ensuite transférer ces crédits ou les dépenser auprès d’un autre fournisseur, même si votre GPU est éteint. Le réseau public commence avec un séquenceur hébergé par Sites, puis peut passer automatiquement à un comité de validateurs. [Projet RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
-**Démarrage du réseau local en une commande, sur toutes les plateformes prises en charge.** Avec Node.js 24 ou une version ultérieure, exécutez `node scripts/bootstrap.mjs` à la racine du dépôt. Le script initialise les portefeuilles et le registre dans `.local/`, les réutilise au prochain démarrage et signale séparément si le registre et le fournisseur sont prêts. Il se connecte à une installation RYZENStrata existante, sans télécharger de modèle. Pour rejoindre un réseau existant, utilisez le fichier de genèse de confiance et l’adresse du registre fournis par son opérateur. [Guide d’installation et d’exécution](../AGENTS.md)
+**Le client rejoint par défaut le réseau de test public.** Transmettez l’URL de ce dépôt à un agent ou exécutez `npm start` à la racine du dépôt avec Node.js 24 ou une version ultérieure. Le client vérifie le registre à partir de la genèse fournie, recherche les fournisseurs disponibles, affiche le résultat puis se termine. Cette vérification fonctionne sans portefeuille ni GPU. L’identifiant de la chaîne reste le même en cas de changement d’hébergeur. [Guide pour les agents](../AGENTS.md) · [Exploitation du réseau de test](../hosting/sites/README.md)
+
+## Participer à la validation du registre public
+
+Le propriétaire d’un portefeuille déjà inscrit comme fournisseur peut héberger un validateur. Son GPU peut rester éteint. Faites suivre une origine HTTPS publique vers le port local 8790 et remplacez l’origine et le chemin du portefeuille dans cet exemple.
+
+~~~powershell
+node src/cli.mjs validator --wallet provider.wallet.json --dir .local/public-validator --origin https://validator.example.org
+~~~
+
+Sites vérifie les candidatures signées et la disponibilité de trois validateurs ayant des adresses, des origines et des identifiants de base de données distincts. Une fois les trois origines publiées dans l’annuaire officiel, Sites certifie le dernier état puis cesse automatiquement de traiter les écritures. Les soldes et les portefeuilles restent valables. Deux membres du comité fixe de trois doivent pouvoir communiquer et conserver leur état de vote pour valider les transactions suivantes. Préservez le portefeuille et le répertoire de données de chacun.
 
 ## Tarification et changement d’époque
 
@@ -20,7 +30,9 @@ Ces montants reprennent les valeurs numériques du tarif international de l’AP
 
 Une époque se termine chaque fois que les fournisseurs cumulent ensemble **un milliard (1 000 000 000) de tokens d’entrée hors cache et de sortie**. Le séquenceur peut programmer un nouveau plafond de sortie par requête pour l’époque suivante. La requête qui fait franchir le seuil est réglée avec le plafond en vigueur, et les tokens excédentaires sont reportés sur l’époque suivante. La hauteur du registre augmente à chaque opération acceptée. Le numéro d’époque augmente à chaque tranche d’un milliard de tokens admissibles.
 
-## Exécution sous Windows
+## Réseau de développement indépendant sous Windows
+
+Pour créer votre réseau local, exécutez `node scripts/bootstrap.mjs`. Les commandes suivantes permettent aussi de démarrer chaque rôle séparément.
 
 Utilisez Node.js 24 ou une version ultérieure. Exécutez les commandes PowerShell depuis la racine du dépôt. Le registre, les portefeuilles, le client et l’adaptateur utilisent les modules intégrés de Node.js. Le fournisseur doit disposer d’une instance RYZENStrata en cours d’exécution, avec le modèle chargé et la route `/v1/models` accessible. L’adresse par défaut du moteur est `http://127.0.0.1:8000/v1` et l’identifiant du modèle est `qwen3.8-flash-next-q2_0`. Les options `--strata` et `--model-id` permettent de les adapter à votre installation. Si le moteur exige une clé, définissez `STRATA_API_KEY` dans l’environnement du fournisseur.
 
@@ -82,7 +94,7 @@ Le demandeur signe notamment l’adresse du fournisseur, l’empreinte de la que
 
 Le séquenceur vérifie la dépense et met à jour SQLite dans une transaction atomique. La base conserve les derniers soldes, numéros de séquence, paramètres et compteurs, l’empreinte du dernier bloc, ainsi qu’une empreinte de 32 octets par époque terminée. Les détails des transactions et les reçus individuels servent uniquement au traitement en cours. Le fournisseur reçoit la question en clair et garde brièvement en mémoire sa dernière réponse pour permettre une nouvelle tentative.
 
-Les nœuds suiveurs vérifient le point de contrôle signé du séquenceur en s’appuyant sur l’empreinte de genèse de confiance. Les données conservées ne permettent pas de rejouer l’historique transaction par transaction. Les participants font confiance au séquenceur pour l’ordre des opérations et l’intégrité des points de contrôle, ainsi qu’aux deux signataires pour l’exactitude des mesures. La preuve indépendante de l’exécution sur GPU et le consensus ouvert à tous restent à développer. Le paiement nécessite la signature finale du demandeur. Si celui-ci se déconnecte ou refuse de signer, une inférence déjà réalisée peut rester impayée.
+Les nœuds suiveurs vérifient le point de contrôle signé du séquenceur en s’appuyant sur l’empreinte de genèse de confiance. Les données conservées ne permettent pas de rejouer l’historique transaction par transaction. Après activation, ils vérifient le certificat du comité et les signatures d’une majorité de ses membres. Le protocole suppose le respect des règles par les validateurs. Les mesures dépendent des attestations des deux parties. La preuve indépendante de l’exécution sur GPU et le consensus ouvert à tous restent à développer. Le paiement nécessite la signature finale du demandeur. Si celui-ci se déconnecte ou refuse de signer, une inférence déjà réalisée peut rester impayée.
 
 ## Tests et licence
 

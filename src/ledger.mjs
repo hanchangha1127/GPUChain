@@ -195,6 +195,12 @@ function transition(state, tx) {
   return next;
 }
 
+/** Apply the same signed transaction rules to a quorum-selected block. */
+export function applyQuorumTransaction(state, tx, tip) {
+  hex64(tip, 'quorum block hash');
+  return immutable({...transition(state, tx),height:integer(state.height+1,'height'),tip});
+}
+
 /** Sign a valid next block without mutating state. */
 export function createBlock(state, tx, wallet) {
   requireValue(wallet.address === state.sequencer, 'Wrong sequencer wallet');

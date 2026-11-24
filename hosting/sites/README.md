@@ -1,21 +1,41 @@
 # GPUChain public testnet
 
-The Sites Worker accepts signed GPUChain transactions over HTTPS and stores the latest checkpoint in D1. It runs on demand even when the operator's PC is offline. GPU providers connect separately. [Live sequencer](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site) · [Current status](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/v1/status)
+The public network is identified by its pinned genesis. Sites hosts its initial sequencer. Three eligible, independently operated validators can automatically take over the same chain. GPU providers connect separately. [Initial Sites sequencer](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site) · [Ledger endpoint directory](../../networks/testnet-endpoints.json)
 
 Use Node.js 24 or later. Run these commands from the GPUChain repository root:
 
 ~~~powershell
-$ledger = 'https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site'
-node src/cli.mjs verify --genesis networks/sites-testnet.json --ledger $ledger
-node src/cli.mjs status --genesis networks/sites-testnet.json --ledger $ledger
-node src/cli.mjs routes --genesis networks/sites-testnet.json --ledger $ledger
+npm start
+node src/cli.mjs verify
+node src/cli.mjs status
+node src/cli.mjs routes
 ~~~
 
 The pinned genesis hash is `a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460`. The genesis allocates one test coin to the operator's test wallet and starts with zero providers. A new client can check the network immediately. To serve inference, the operator registers a provider address and its HTTPS origin. A funded requester can then use `chat` with the same ledger and genesis options. The client selects the lowest measured latency among available candidates. An empty route list means the probe found no ready inference provider. [Genesis file](../../networks/sites-testnet.json) · [Provider and wallet commands](../../README.md)
 
 ## Hosted state
 
-The Worker handles `GET /v1/genesis`, `GET /v1/status`, `GET /v1/checkpoint` and `POST /v1/transactions`. It uses the same validation and accounting code as the desktop sequencer. D1 stores a compact signed snapshot. A conditional update against the previous tip allows only one competing spend to commit. This first hosted version limits its serialized checkpoint to 1,900,000 bytes. Increasing the number of accounts beyond that limit requires a storage schema upgrade.
+The Worker serves the genesis, status and checkpoint, accepts signed transactions, and accepts signed validator opt-ins at `POST /v1/consensus/enroll`. The candidate feed is `GET /v1/consensus/candidates`. It uses the same validation and accounting code as the desktop sequencer. D1 stores a compact signed snapshot. A conditional update against the previous tip allows only one competing spend to commit. This first hosted version limits its serialized checkpoint to 1,900,000 bytes. Increasing the number of accounts beyond that limit requires a storage schema upgrade.
+
+## Automatic community consensus
+
+Joining with a repository URL connects a client. Running a validator is a separate opt-in for participants who can keep an independent machine, a durable database and a stable HTTPS origin online. The first committee has three seats. Each seat requires its own provider wallet already registered on this chain. GPU inference can be offline. The enrollment proves control of the wallet and endpoint. Independent operators and hardware are an operational assumption.
+
+Start this service behind the participant's HTTPS reverse proxy. Keep the chosen data directory across restarts.
+
+~~~powershell
+node src/cli.mjs validator --wallet provider.wallet.json --origin https://validator.example.org --dir .local/validator --port 8790
+~~~
+
+1. Before activation, validators periodically send signed opt-ins and answer fresh readiness challenges. The signed identities include each validator's durable database ID.
+2. The GitHub Actions directory publisher runs at minutes 07, 22, 37 and 52 of each hour. It verifies the public genesis, provider registrations and signed candidate announcements before publishing origins. Scheduled jobs can start later. All three selected origins must already be published in the repository's main branch, so a fresh clone has contact points. While the directory is unavailable, Sites continues serving ordinary transactions.
+3. Once the requirements are met, Sites uses a conditional D1 update to seal its final checkpoint and certify the three validators. Concurrent enrollment or payment changes trigger a retry. Balances, nonces, registered providers, token counters and epoch history carry over. The validators fetch the certificate and propagate it among the named peers. The bootstrap signing key stays with its owner.
+4. Clients verify the certified roster, then check **two distinct signatures out of three** for each confirmed payment or inference receipt. Sites can go offline once at least two validators have durably adopted the same authority. A fresh clone uses the published origins. A returning client can use cached origins through a GitHub outage. An explicit `--ledger` or `--upstream` pins the caller to the specified address.
+5. One stopped validator leaves a majority. With one survivor, a previously confirmed checkpoint can be read, and new transactions require a majority to return. Losing the only bootstrap before activation and distribution of the certificate can interrupt the network.
+
+The implementation uses per-height Paxos ballots and a fixed committee. Safety assumes honest protocol execution and durable promises. Keep each voter's current SQLite files together with its wallet. Cloning running identities or rolling back voter storage violates this assumption. A fresh database has a new identity and cannot replace the old voter. Byzantine tolerance and automatic replacement of lost committee seats remain open work. The original signed authorization for registering GPU providers and scheduling settings still applies. [Paxos Made Simple](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf)
+
+Inspect `node src/cli.mjs status` and `node src/cli.mjs verify`. The initial writer reports `sequencer` and a waiting validator reports `standby`. At activation Sites reports `retired` and the voting nodes report `validator`. Nodes retain the latest state, proofs, epoch digests and the unresolved vote needed for crash recovery. Committing a slot releases its pending transaction.
 
 ## Building or operating the Worker
 
