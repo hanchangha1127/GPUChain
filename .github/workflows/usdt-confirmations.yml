@@ -1,0 +1,37 @@
+name: Wake Sites payment reconciliation
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: gpuchain-usdt-reconciliation
+  cancel-in-progress: false
+jobs:
+  wake-sites:
+    if: github.repository == 'hanchangha1127/GPUChain' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask the hosted Worker to process due orders
+        env:
+          SWEEP_TOKEN: ${{ secrets.GPUCHAIN_USDT_SWEEP }}
+        shell: python
+        run: |
+          import json, os, urllib.request
+          url = 'https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/v1/sales/tick'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          for _ in range(16):
+              req = urllib.request.Request(url, data=b'{}', headers={
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + os.environ['SWEEP_TOKEN'],
+                  'User-Agent': 'GPUChain-Sites-reconciliation'
+              })
+              with opener.open(req, timeout=25) as reply:
+                  result = json.load(reply)
+              if not result['more']:
+                  break
+          print('Sites reconciliation responded successfully.')
