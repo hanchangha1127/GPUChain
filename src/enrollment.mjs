@@ -1,4 +1,5 @@
 import { hash, sign, verify } from './crypto.mjs';
+import { canValidate } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
 
 const MAX_AGE_MS = 120_000;
@@ -25,9 +26,9 @@ function publicOrigin(value) {
 export function checkEnrollment(intent, state, {now = Date.now(), allowLoopback = false} = {}) {
   const p = intent?.payload;
   if (!p || !INSTANCE_ID.test(p.instanceId) || p.chainId !== state.chainId || p.address === state.sequencer ||
-      !state.providers.includes(p.address) ||
+      !canValidate(state,p.address) ||
       !Number.isSafeInteger(p.issuedAt) || p.issuedAt <= now-MAX_AGE_MS || p.issuedAt > now+10_000) {
-    throw Error('Expected a fresh enrollment from a registered provider');
+    throw Error('Expected a fresh enrollment from an authorized validator wallet');
   }
   const expected = {domain:'gpuchain/validator-enroll/v1',chainId:state.chainId,
     address:p.address,origin:p.origin,instanceId:p.instanceId,issuedAt:p.issuedAt};

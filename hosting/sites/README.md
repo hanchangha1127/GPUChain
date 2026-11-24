@@ -6,6 +6,7 @@ Use Node.js 24 or later. Run these commands from the GPUChain repository root:
 
 ~~~powershell
 npm start
+npm run status
 node src/cli.mjs verify
 node src/cli.mjs status
 node src/cli.mjs routes
@@ -19,23 +20,25 @@ The Worker serves the genesis, status and checkpoint, accepts signed transaction
 
 ## Automatic community consensus
 
-Joining with a repository URL connects a client. Running a validator is a separate opt-in for participants who can keep an independent machine, a durable database and a stable HTTPS origin online. The first committee has three seats. Each seat requires its own provider wallet already registered on this chain. GPU inference can be offline. The enrollment proves control of the wallet and endpoint. Independent operators and hardware are an operational assumption.
+Joining with a repository URL starts a persistent local verification node. It authenticates and stores the latest checkpoint using an outbound connection. The command `npm run status` reports whether it is verifying or voting. Use `npm stop` to stop it and `npm run join` for a one-time connectivity check. These commands work independently of RYZENStrata.
 
-Start this service behind the participant's HTTPS reverse proxy. Keep the chosen data directory across restarts.
+The voting committee has three seats. The sequencer operator can authorize a verification-only wallet using the following command with the participant's public address. An existing registered inference provider wallet is also eligible.
 
 ~~~powershell
-node src/cli.mjs validator --wallet provider.wallet.json --origin https://validator.example.org --dir .local/validator --port 8790
+node src/cli.mjs add-validator --wallet sequencer.wallet.json --address $participantAddress
 ~~~
 
+The participant points a stable public HTTPS origin at their node, sets `GPUCHAIN_VALIDATOR_ORIGIN` and restarts it. The default listener is `127.0.0.1:8790`. Use the same wallet, data directory and public origin after voting starts. Enrollment proves control of each wallet, endpoint and database identity. Independent hardware and operators are an operational assumption.
+
 1. Before activation, validators periodically send signed opt-ins and answer fresh readiness challenges. The signed identities include each validator's durable database ID.
-2. The GitHub Actions directory publisher runs at minutes 07, 22, 37 and 52 of each hour. It verifies the public genesis, provider registrations and signed candidate announcements before publishing origins. Scheduled jobs can start later. All three selected origins must already be published in the repository's main branch, so a fresh clone has contact points. While the directory is unavailable, Sites continues serving ordinary transactions.
+2. The GitHub Actions directory publisher runs at minutes 07, 22, 37 and 52 of each hour. It verifies the public genesis, candidate eligibility and signed announcements before publishing origins. Scheduled jobs can start later. All three selected origins must already be published in the repository's main branch, so a fresh clone has contact points. While the directory is unavailable, Sites continues serving ordinary transactions.
 3. Once the requirements are met, Sites uses a conditional D1 update to seal its final checkpoint and certify the three validators. Concurrent enrollment or payment changes trigger a retry. Balances, nonces, registered providers, token counters and epoch history carry over. The validators fetch the certificate and propagate it among the named peers. The bootstrap signing key stays with its owner.
 4. Clients verify the certified roster, then check **two distinct signatures out of three** for each confirmed payment or inference receipt. Sites can go offline once at least two validators have durably adopted the same authority. A fresh clone uses the published origins. A returning client can use cached origins through a GitHub outage. An explicit `--ledger` or `--upstream` pins the caller to the specified address.
 5. One stopped validator leaves a majority. With one survivor, a previously confirmed checkpoint can be read, and new transactions require a majority to return. Losing the only bootstrap before activation and distribution of the certificate can interrupt the network.
 
 The implementation uses per-height Paxos ballots and a fixed committee. Safety assumes honest protocol execution and durable promises. Keep each voter's current SQLite files together with its wallet. Cloning running identities or rolling back voter storage violates this assumption. A fresh database has a new identity and cannot replace the old voter. Byzantine tolerance and automatic replacement of lost committee seats remain open work. The original signed authorization for registering GPU providers and scheduling settings still applies. [Paxos Made Simple](https://lamport.azurewebsites.net/pubs/paxos-simple.pdf)
 
-Inspect `node src/cli.mjs status` and `node src/cli.mjs verify`. The initial writer reports `sequencer` and a waiting validator reports `standby`. At activation Sites reports `retired` and the voting nodes report `validator`. Nodes retain the latest state, proofs, epoch digests and the unresolved vote needed for crash recovery. Committing a slot releases its pending transaction.
+Inspect the local node with `npm run status` and the network with `node src/cli.mjs status` and `node src/cli.mjs verify`. The initial writer reports `sequencer`. The local node reports its verified height and voting status. At activation Sites reports `retired` and committee members report `validator`. Nodes retain the latest state, proofs and epoch digests. Voting nodes also preserve the unresolved vote needed for crash recovery. Committing a slot releases its pending transaction.
 
 ## Building or operating the Worker
 

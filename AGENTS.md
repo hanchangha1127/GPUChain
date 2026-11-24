@@ -1,27 +1,26 @@
 # Install and run GPUChain
 
-When the user gives you the GPUChain repository URL by itself, use the public testnet setup below. If the user names another task, such as reviewing code or creating a local network, follow that request. The [README](README.md) describes the experimental protocol and its trust assumptions.
+When a user gives you the GPUChain repository URL by itself, start a persistent node on the public testnet using the steps below. If the user asks for another task, such as reviewing code, checking connectivity once, supplying inference or creating a local network, follow that request. [Project overview](README.md)
 
-## Join the public testnet by default
+## Start the public verification node by default
 
 1. Use an existing GPUChain checkout or clone `https://github.com/hanchangha1127/GPUChain.git` into the user's chosen workspace and enter the repository root.
-2. Check `node --version`. If needed, install Node 24 or later using the platform package manager or the [Node.js installer](https://nodejs.org/en/download). On Windows with WinGet, use `winget install --id OpenJS.NodeJS.LTS --exact`, then open a shell with the updated PATH.
-3. Run `node scripts/join.mjs` (or `npm start`). This one-shot command resolves a public ledger, authenticates its checkpoint against the bundled genesis, and probes registered inference providers. It needs no additional npm packages, wallet, model or background service.
-4. Report the actual `ledgerUrl`, `mode`, `chainId`, `height`, and the number of `readyProviders`. A follower serves verified reads. Before validator activation, Sites sequences transactions. After activation, two of the three certified validators must be available to commit writes. An empty provider list is a successful ledger connection with no ready inference provider found from this client.
+2. Check `node --version`. Use Node 24 or later. If needed, install it with the platform's package manager or the [Node.js installer](https://nodejs.org/en/download). On Windows with WinGet, use `winget install --id OpenJS.NodeJS.LTS --exact`, then open a shell that sees the new PATH.
+3. Run `npm start` (or `node scripts/participant.mjs start`). The launcher creates or reuses a dedicated identity and starts the node in the background. Repeating the command checks the existing instance. The process periodically verifies signed checkpoints against the bundled public genesis and retains the latest verified state. The default installation needs Node's built-in modules and an outbound network connection. GPU inference is a separate role.
+4. Run `npm run status`. Report `url`, `pid`, `chainId`, `verified`, `height` and `voting` from the result. If the first checkpoint is still pending, allow time for discovery and recheck. Include `lastVerifiedAt` and `syncError` when the upstream is unavailable. Leave the service running when the agent session ends.
+5. Tell the user how to inspect and stop their node with `npm run status` and `npm stop`. After an OS reboot, run `npm start` to resume. To apply changed settings or a checkout update, stop and restart the same node.
 
-For later checks, `node src/cli.mjs verify`, `node src/cli.mjs status` and `node src/cli.mjs routes` default to the public network. Use the same pinned genesis when its ledger moves. Discovery can reuse cached endpoints and refresh the project's endpoint directory. If discovery fails, report the error; additional same-chain HTTPS origins supplied by the operator can be set in `GPUCHAIN_LEDGER_URLS` (comma-separated). Never substitute a fresh genesis or demo coins for a failed public join. [Public genesis](networks/sites-testnet.json) · [Public node and operator guide](hosting/sites/README.md)
+The default data directory is `~/.gpuchain/participant` and the default listener is `127.0.0.1:8790`. `GPUCHAIN_PARTICIPANT_DIR` selects another persistent directory and `GPUCHAIN_VALIDATOR_PORT` selects another local port. Preserve the wallet and voting database together. Use the same directory for start, status and stop. Keep private keys on the participant's machine. A machine behind NAT can verify the ledger through its outbound connection.
 
-Generate a wallet only when the user needs one for spending or supplying inference. For example, run `node src/cli.mjs wallet --out user.wallet.json` once and preserve this private file. To spend, the wallet needs funds on this network. To supply, give its public address and HTTPS provider origin to the operator and follow the [role commands](README.md). Use a custom network's own trusted genesis and ledger URL when explicitly requested.
+For an explicitly requested one-time connectivity and provider check, run `npm run join`. `node src/cli.mjs verify`, `status` and `routes` query the public network. If discovery is unavailable, the node can retry known origins or use comma-separated same-chain URLs in `GPUCHAIN_LEDGER_URLS`. Preserve the pinned network and report any outage. [Public genesis](networks/sites-testnet.json) · [Public node and operator guide](hosting/sites/README.md)
 
-## Run a public validator when requested
+## Voting on the public network
 
-A wallet already registered as a provider can opt in to validating the public ledger. The validator service needs a persistent local directory, that wallet, and its own reachable public HTTPS origin. Validation runs independently of GPU inference. Point the public origin at the validator's loopback listener on port 8790 through a TLS reverse proxy. Start the following command with the actual wallet path and origin:
+Continuous checkpoint verification starts immediately after the node reaches the network. A voting seat also requires an authorized public wallet address, a stable public HTTPS origin, its original database identity and membership in the three-node certified committee. Report a seat only when `voting` is true.
 
-~~~powershell
-node src/cli.mjs validator --wallet provider.wallet.json --dir .local/public-validator --origin https://validator.example.org
-~~~
+For a prospective voter, have the operator authorize its **public address** with `add-validator`. An existing registered provider address is also eligible. Point its own public HTTPS origin at the local listener and set `GPUCHAIN_VALIDATOR_ORIGIN`. To use an existing authorized wallet, configure `GPUCHAIN_VALIDATOR_WALLET` before the first start in the chosen data directory. Restart the managed node after configuring the origin. It checks eligibility and enrolls when ready. Provisioning a publicly reachable endpoint and authorizing a voting seat are separate from the default loopback installation.
 
-Sites checks signed enrollment and live challenges for three distinct wallets, origins, and database identities. Once the public endpoint directory contains the three reachable origins, Sites certifies its final state and retires its writer automatically. The validator processes discover the certificate, persist it, and commit transactions with two signatures. Before decommissioning Sites, verify that at least two validators serve the certified network and can commit. Preserve each validator's wallet and original data directory together. Reusing a key with an empty or rolled-back database can compromise voting safety. [Public testnet operations](hosting/sites/README.md)
+Sites checks signed enrollment, distinct wallet addresses, live endpoints and database identities. Once the three reachable origins appear in the public directory, Sites certifies the final bootstrap checkpoint. Two of the three certified validators can commit transactions. Other participants continue verifying checkpoints. Before decommissioning Sites, verify that two certified validators can commit. Preserve each voter's original wallet and current data directory across restarts. [Public testnet operations](hosting/sites/README.md)
 
 ## Start an independent local network on request
 

@@ -3,7 +3,7 @@ import { authenticate, nextCheckpoint } from '../../src/checkpoint.mjs';
 import { activateCheckpoint, createActivation } from '../../src/consensus.mjs';
 import { checkEnrollment, checkReadiness, limitedJson, readCandidates, recordCandidate } from '../../src/enrollment.mjs';
 import { DIRECTORY_URL, directoryOrigins } from '../../src/peer-directory.mjs';
-import { EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
+import { canValidate, EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
 
 const MAX_TX_BYTES = 16_384;
 // Leave margin for SQLite row and index overhead under D1's 2 MB per-row limit.
@@ -78,7 +78,8 @@ async function readHead(db, initial) {
 function status(state, retired) {
   const {chainId, tip, height, providers, epoch, epochTokens, totalWorkTokens, maxOutputTokens} = state;
   return {mode:retired ? 'retired' : 'sequencer', chainId, tip, height, providers, epoch, epochTokens, totalWorkTokens,
-    maxOutputTokens, epochTarget:EPOCH_TOKENS, syncError:null, inference:false};
+    maxOutputTokens, epochTarget:EPOCH_TOKENS, syncError:null, inference:false,
+    eligibleValidatorCount:new Set([...providers,...(state.validatorAddresses ?? [])].filter(a=>a !== state.sequencer)).size};
 }
 
 function homepage(state, retired) {
@@ -90,6 +91,7 @@ dt{font-weight:650}dd{margin:0 0 .8rem;overflow-wrap:anywhere}a{color:#045a84}na
 <main><h1>GPUChain ledger</h1><p>${retired ? 'Participating validators now settle transactions. This endpoint serves the certified transition checkpoint.' : 'This sequencer settles signed transfers and inference receipts.'}</p>
 <dl><dt>Genesis hash</dt><dd><code>${state.chainId}</code></dd>
 <dt>Accepted transactions</dt><dd>${state.height}</dd><dt>Registered providers</dt><dd>${state.providers.length}</dd>
+<dt>Validator-only authorizations</dt><dd>${(state.validatorAddresses ?? []).length}</dd>
 <dt>Completed epochs</dt><dd>${state.epoch}</dd><dt>Eligible tokens in current epoch</dt>
 <dd>${state.epochTokens} / 1,000,000,000</dd></dl>
 <nav><a href="/v1/genesis">Genesis file</a><a href="/v1/checkpoint">Signed checkpoint</a>
@@ -112,7 +114,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
   if (roster.candidates.length < 3) return json({active:false,checkpoint:head});
 
   const probes = await Promise.allSettled(roster.candidates.map(item=>item.payload)
-    .filter(candidate => head.state.providers.includes(candidate.address))
+    .filter(candidate => canValidate(head.state,candidate.address))
     .map(candidate => candidate.address === ready.address ? ready : checkReadiness(candidate,fetchReady)));
   const reachable = probes.filter(r => r.status === 'fulfilled').map(r => r.value);
   if (reachable.length < 3) return json({active:false,checkpoint:head});

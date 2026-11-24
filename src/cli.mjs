@@ -20,7 +20,7 @@ const usage = `GPUChain
   genesis  --wallet SEQUENCER_KEY --out FILE --allocation ADDRESS=COINS
            [--allocation ADDRESS=COINS ...] [--provider ADDRESS ...] [--max-output N]
   node     --genesis PRIVATE_NETWORK_FILE --wallet SEQUENCER_KEY --dir DIR [--listen HOST] [--port 8787]
-  validator --wallet REGISTERED_KEY --origin HTTPS_URL --dir DIR [--genesis FILE] [--ledger URL]
+  validator --wallet AUTHORIZED_KEY --origin HTTPS_URL --dir DIR [--genesis FILE] [--ledger URL]
             [--listen HOST] [--port 8790]
   follower --dir DIR [--genesis FILE] [--upstream URL] [--listen HOST] [--port 8788]
   provider --wallet PROVIDER_KEY [--genesis FILE] [--ledger URL] [--strata URL] [--model-id ID]
@@ -33,6 +33,7 @@ const usage = `GPUChain
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
   settings --genesis FILE --wallet SEQUENCER_KEY --max-output N [--ledger URL]
   add-provider --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS [--url URL] [--ledger URL]
+  add-validator --wallet SEQUENCER_KEY --address ADDRESS [--genesis FILE] [--ledger URL]
   set-provider-endpoint --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS (--url URL | --withdraw) [--ledger URL]
 Client commands default to the pinned public testnet and discover its ledger endpoints.
 Custom genesis files default to http://127.0.0.1:8787. Strata defaults to http://127.0.0.1:8000/v1.`;
@@ -51,6 +52,7 @@ const flags = {
   chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output'],
   settings: ['genesis','ledger','wallet','max-output'],
   'add-provider': ['genesis','ledger','wallet','address','url'],
+  'add-validator': ['genesis','ledger','wallet','address'],
   'set-provider-endpoint': ['genesis','ledger','wallet','address','url','withdraw']
 };
 
@@ -313,7 +315,7 @@ async function main() {
   if (command === 'status') {
     const {chainId,height,tip,epoch,epochTokens,totalWorkTokens,maxOutputTokens,pendingMaxOutputTokens,providers} = state;
     return print({chainId,height,tip,epoch,epochTokens,epochSizeTokens:EPOCH_TOKENS,totalWorkTokens,
-      maxOutputTokens,pendingMaxOutputTokens,providers,consensus:checkpoint.authority
+      maxOutputTokens,pendingMaxOutputTokens,providers,validatorAddresses:state.validatorAddresses ?? [],consensus:checkpoint.authority
         ? {mode:'validator',threshold:2,validators:checkpoint.authority.payload.validators}
         : {mode:'bootstrap'}});
   }
@@ -331,6 +333,8 @@ async function main() {
   } else if (command === 'add-provider') {
     details = {provider:address(required(v,'address'))};
     if (v.url !== undefined) details.endpoint = normalizeProviderEndpoint(v.url);
+  } else if (command === 'add-validator') {
+    details = {validator:address(required(v,'address'))};
   } else if (command === 'set-provider-endpoint') {
     if (Boolean(v.withdraw) === (v.url !== undefined)) throw Error('Supply one of --url and --withdraw');
     details = {provider:address(required(v,'address')),endpoint:v.withdraw ? null : normalizeProviderEndpoint(v.url)};

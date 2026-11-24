@@ -4,17 +4,15 @@
 
 GPUChain est un **réseau expérimental de crédits d’inférence, encore en développement**, pour Qwen3.8-Flash-Next. En exécutant RYZENStrata sur votre matériel, vous gagnez des crédits lorsque vous traitez les requêtes d’autres utilisateurs. Vous pouvez ensuite transférer ces crédits ou les dépenser auprès d’un autre fournisseur, même si votre GPU est éteint. Le réseau public commence avec un séquenceur hébergé par Sites, puis peut passer automatiquement à un comité de validateurs. [Projet RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
-**Le client rejoint par défaut le réseau de test public.** Transmettez l’URL de ce dépôt à un agent ou exécutez `npm start` à la racine du dépôt avec Node.js 24 ou une version ultérieure. Le client vérifie le registre à partir de la genèse fournie, recherche les fournisseurs disponibles, affiche le résultat puis se termine. Cette vérification fonctionne sans portefeuille ni GPU. L’identifiant de la chaîne reste le même en cas de changement d’hébergeur. [Guide pour les agents](../AGENTS.md) · [Exploitation du réseau de test](../hosting/sites/README.md)
+**Transmettez l’URL de ce dépôt à un agent pour lancer un nœud de vérification du réseau de test public en arrière-plan.** Vous pouvez aussi cloner le dépôt et exécuter `npm start` avec Node.js 24 ou une version ultérieure. Le nœud crée ou réutilise son portefeuille et sa base de données, vérifie régulièrement les points de contrôle signés et conserve le dernier état vérifié. Il continue de fonctionner après la fermeture du terminal ou de la session de l’agent. Cette participation fonctionne sans GPU, sans téléchargement de modèle et sans adresse IP publique. [Guide pour les agents](../AGENTS.md) · [Exploitation du réseau de test](../hosting/sites/README.md)
 
-## Participer à la validation du registre public
+Utilisez `npm run status` pour consulter la hauteur vérifiée et le statut de vote du nœud local. `npm stop` l’arrête et `npm start` le relance avec les mêmes données. Pour vérifier ponctuellement la connexion et les fournisseurs d’inférence, utilisez `npm run join`.
 
-Le propriétaire d’un portefeuille déjà inscrit comme fournisseur peut héberger un validateur. Son GPU peut rester éteint. Faites suivre une origine HTTPS publique vers le port local 8790 et remplacez l’origine et le chemin du portefeuille dans cet exemple.
+## Vérification du registre et vote
 
-~~~powershell
-node src/cli.mjs validator --wallet provider.wallet.json --dir .local/public-validator --origin https://validator.example.org
-~~~
+Chaque nœud vérifie les points de contrôle. Pour voter sur les transactions, il lui faut également un portefeuille autorisé et une origine HTTPS publique accessible. L’exploitant peut autoriser l’adresse publique du portefeuille avec `add-validator`. Les portefeuilles déjà inscrits comme fournisseurs sont aussi admissibles. Faites suivre le trafic HTTPS vers le port local (8790 par défaut), définissez `GPUCHAIN_VALIDATOR_ORIGIN`, puis redémarrez le nœud. Conservez ensemble le portefeuille et sa base dans leur répertoire de données d’origine, par défaut `~/.gpuchain/participant`.
 
-Sites vérifie les candidatures signées et la disponibilité de trois validateurs ayant des adresses, des origines et des identifiants de base de données distincts. Une fois les trois origines publiées dans l’annuaire officiel, Sites certifie le dernier état puis cesse automatiquement de traiter les écritures. Les soldes et les portefeuilles restent valables. Deux membres du comité fixe de trois doivent pouvoir communiquer et conserver leur état de vote pour valider les transactions suivantes. Préservez le portefeuille et le répertoire de données de chacun.
+Sites vérifie les signatures, les adresses et les identifiants de base de trois nœuds prêts, puis certifie le comité. Deux signatures de ses trois membres sont nécessaires pour confirmer les transactions. Les autres nœuds continuent de vérifier le registre. [Activation du comité et conditions d’exploitation](../hosting/sites/README.md)
 
 ## Tarification et changement d’époque
 

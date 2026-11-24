@@ -118,7 +118,7 @@ async function probeStatus(url, chainId, timeoutMs) {
 // All discovery requests are reads. A transaction is signed and submitted by the caller
 // to one selected endpoint. The role from /status is only a routing hint.
 export async function resolvePublicLedger({
-  write = false, activation = false, chainId = publicGenesis.hash, directory = bundledDirectory,
+  write = false, activation = false, excludeInstanceId, chainId = publicGenesis.hash, directory = bundledDirectory,
   cacheDir = process.env.GPUCHAIN_STATE_DIR || join(homedir(), '.gpuchain'),
   seeds = process.env.GPUCHAIN_LEDGER_URLS || '',
   refresh = () => requestJson(DIRECTORY_URL, {timeoutMs:PROBE_TIMEOUT, maxBytes:32*1024}),
@@ -155,6 +155,7 @@ export async function resolvePublicLedger({
       for (const result of results) {
         if (result.status === 'rejected' || !timeLeft()) continue;
         const {url} = result.value;
+        if (excludeInstanceId && result.value.instanceId === excludeInstanceId) continue;
         let checkpoint;
         try {
           checkpoint = await requestJson(url + '/v1/checkpoint', {timeoutMs:timeLeft() || 1, maxBytes:64*1024*1024});
@@ -190,7 +191,7 @@ export async function resolvePublicLedger({
       latest.authority.payload.validators.some(member => member.url === r.url && member.address === r.address &&
         member.instanceId === r.instanceId)) :
       current.find(r => r.mode === 'sequencer');
-    const match = writer ?? (!write && current.find(r => r.mode === 'follower')) ??
+    const match = writer ?? (!write && current.find(r => r.mode === 'follower' || r.mode === 'verifier')) ??
       (!write && activation && current.find(r => r.mode === 'retired' && r.mark.authority));
     if (match) return {url:match.url, mode:match.mode, state:latest.state, checkpoint:latest};
   }

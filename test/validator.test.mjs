@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createActivation, activateCheckpoint, verifyConsensusAck } from '../src/consensus.mjs';
 import { generateWallet, hash, sign } from '../src/crypto.mjs';
+import { nextCheckpoint } from '../src/checkpoint.mjs';
 import { createGenesis, replay } from '../src/ledger.mjs';
 import { startValidator } from '../src/validator.mjs';
 import { requestJson } from '../src/http.mjs';
@@ -106,4 +109,99 @@ test('concurrent proposers cannot commit conflicting spends for a nonce',async t
   const heads = await Promise.all([0,1,2].map(i=>f.call(i,'checkpoint')));
   assert.ok(heads.every(h=>h.state.height === 1 && h.state.tip === heads[0].state.tip));
   assert.ok([79,80].includes(heads[0].state.balances[f.buyer.address]));
+});
+
+test('a default verifier keeps checking, rejects invalid and older snapshots and resumes with its durable head',async t=>{
+  const dir = await mkdtemp(join(tmpdir(),'gpuchain-verifier-'));
+  const seq=generateWallet(), wallet=generateWallet(), other=generateWallet();
+  const genesis=createGenesis(seq,{allocations:{[wallet.address]:100},providers:[]});
+  const initial={genesis,state:replay([genesis]),epochHashes:[],signature:null};
+  const payload={type:'transfer',chainId:genesis.hash,from:wallet.address,to:other.address,nonce:1,amount:5};
+  const next=nextCheckpoint(initial,{payload,signature:sign(wallet.privateKey,payload)},seq).next;
+  let remote, node, enrollmentAttempts=0;
+  const options={dir,genesis,wallet,port:0,syncIntervalMs:30,
+    monitor:async()=>{
+      if (!remote) throw Error('Test network offline');
+      return {url:'https://test-ledger.example',checkpoint:remote};
+    }, discover:async()=>{enrollmentAttempts++;}};
+  t.after(async()=>{ await node?.close(); await rm(dir,{recursive:true,force:true}); });
+  node=await startValidator(options);
+  const status=()=>requestJson(node.url+'/v1/status');
+  let report=await status();
+  assert.equal(report.mode,'standby');
+  assert.equal(report.verified,false);
+  assert.match(report.syncError,/offline/);
+  const id=report.instanceId;
+  remote=initial;
+  for (let retry=0;retry<100 && !(await status()).verified;retry++) await delay(15);
+  report=await status();
+  assert.equal(report.mode,'verifier');
+  assert.equal(report.voting,false);
+  assert.equal(report.ledgerUrl,'https://test-ledger.example');
+  assert.ok(Number.isFinite(Date.parse(report.lastVerifiedAt)));
+  assert.equal(report.enrollmentStatus,'needs-public-origin');
+  remote=next;
+  await node.sync();
+  assert.equal((await status()).height,1);
+  remote=structuredClone(next); remote.state.balances[wallet.address]=9000;
+  await assert.rejects(node.sync(),/signature/i);
+  assert.equal((await requestJson(node.url+'/v1/checkpoint')).state.balances[wallet.address],95);
+  remote=initial;
+  await assert.rejects(node.sync(),/rollback/i);
+  remote=undefined;
+  await node.close();
+  node=await startValidator(options);
+  report=await status();
+  assert.equal(report.instanceId,id);
+  assert.equal(report.tip,next.state.tip);
+  assert.match(report.syncError,/offline/);
+  assert.equal(enrollmentAttempts,0);
+  for (const path of ['transactions','consensus/prepare','consensus/accept']) {
+    await assert.rejects(requestJson(node.url+'/v1/'+path,{body:{}}),/503/);
+  }
+});
+
+test('a verifying node enters voting only for its certified address, origin and durable database',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'gpuchain-identity-'));
+  const seq=generateWallet(), wallet=generateWallet();
+  const genesis=createGenesis(seq,{allocations:{},providers:[wallet.address]});
+  const legacy={genesis,state:replay([genesis]),epochHashes:[],signature:null};
+  let checkpoint=legacy, enrollments=0;
+  const nodes=[];
+  t.after(async()=>{ await Promise.all(nodes.map(n=>n.close())); await rm(dir,{recursive:true,force:true}); });
+  const origin='https://validator.example.org';
+  const options={genesis,wallet,port:0,origin,syncIntervalMs:60_000,monitor:async()=>checkpoint,
+    discover:async ({checkpoint:observed})=>{
+      enrollments++;
+      assert.equal(observed.state.tip,genesis.hash);
+      throw Error('Temporary enrollment failure');
+    }};
+  const participant=await startValidator({...options,dir:join(dir,'participant')}); nodes.push(participant);
+  let status=await requestJson(participant.url+'/v1/status');
+  assert.equal(status.verified,true);
+  assert.equal(status.voting,false);
+  assert.equal(status.enrollmentStatus,'candidate');
+  assert.equal(status.syncError,null);
+  assert.match(status.enrollmentError,/enrollment failure/);
+  const others=[1,2].map(i=>({address:generateWallet().address,instanceId:randomUUID(),url:'https://v'+i+'.example'}));
+  checkpoint=activateCheckpoint(legacy,createActivation(legacy,
+    [{address:wallet.address,url:origin,instanceId:status.instanceId},...others],seq));
+  await participant.sync();
+  status=await requestJson(participant.url+'/v1/status');
+  assert.equal(status.mode,'validator');
+  assert.equal(status.voting,true);
+  assert.equal(status.enrollmentStatus,'voting');
+  const fresh=await startValidator({...options,dir:join(dir,'fresh')}); nodes.push(fresh);
+  status=await requestJson(fresh.url+'/v1/status');
+  assert.equal(status.mode,'verifier');
+  assert.equal(status.verified,true);
+  assert.equal(status.voting,false);
+  assert.equal(status.enrollmentStatus,'identity-mismatch');
+  const outsider=await startValidator({...options,wallet:generateWallet(),dir:join(dir,'outsider')}); nodes.push(outsider);
+  assert.equal((await requestJson(outsider.url+'/v1/status')).enrollmentStatus,'committee-fixed');
+  for (const node of [outsider,fresh]) {
+    await assert.rejects(requestJson(node.url+'/v1/consensus/accept',{body:{}}),/503/);
+    assert.deepEqual(await requestJson(node.url+'/v1/checkpoint'),checkpoint);
+  }
+  assert.equal(enrollments,1);
 });

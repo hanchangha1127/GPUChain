@@ -126,9 +126,15 @@ function pay(state, from, to, amount) {
 }
 
 const BASE = ['type', 'from', 'chainId', 'nonce'];
+export function canValidate(state, address) {
+  return address !== state.sequencer &&
+    (state.providers.includes(address) || (state.validatorAddresses ?? []).includes(address));
+}
+
 const EXTRA = Object.freeze({
   transfer: ['to', 'amount'],
   'add-provider': ['provider'],
+  'add-validator': ['validator'],
   'set-provider-endpoint': ['provider', 'endpoint'],
   inference: ['provider', 'model', 'contextWindow', 'requestHash', 'responseHash', 'inputTokens', 'cachedTokens', 'outputTokens'],
   settings: ['maxOutputTokens'],
@@ -149,6 +155,12 @@ function transition(state, tx) {
   const next = {...state, nonces: {...state.nonces, [p.from]: p.nonce}};
   if (p.type === 'transfer') {
     next.balances = pay(state, p.from, p.to, integer(p.amount, 'transfer amount', 1));
+  } else if (p.type === 'add-validator') {
+    requireValue(p.from === state.sequencer, 'Only the sequencer can authorize a validator');
+    hex64(p.validator, 'validator address');
+    requireValue(p.validator !== state.sequencer, 'Bootstrap signer cannot be a validator');
+    requireValue(!canValidate(state,p.validator), 'Validator already authorized');
+    next.validatorAddresses = [...(state.validatorAddresses ?? []),p.validator];
   } else if (p.type === 'add-provider' || p.type === 'set-provider-endpoint') {
     requireValue(p.from === state.sequencer, 'Only the sequencer can register a provider or set its endpoint');
     hex64(p.provider, 'provider address');
@@ -198,6 +210,7 @@ function transition(state, tx) {
 /** Apply the same signed transaction rules to a quorum-selected block. */
 export function applyQuorumTransaction(state, tx, tip) {
   hex64(tip, 'quorum block hash');
+  requireValue(tx?.payload?.type !== 'add-validator', 'The voting committee is fixed after activation');
   return immutable({...transition(state, tx),height:integer(state.height+1,'height'),tip});
 }
 

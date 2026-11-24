@@ -4,19 +4,15 @@
 
 GPUChain is an **experimental, unfinished inference-credit network** for Qwen3.8-Flash-Next. A provider runs RYZENStrata on its own hardware and earns coins for serving text requests. Wallet holders can transfer earned coins or spend them on another provider, including while their own GPU is offline. Sites runs the initial public ledger and can automatically hand transaction settlement to participating validators. [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
-**Join the public testnet.** Give this repository URL to an agent, or run `npm start` from a checkout with Node.js 24 or later. The client verifies the ledger against the bundled genesis, probes inference providers, prints the endpoint and result, and exits. A wallet and GPU are optional for this check. [Agent setup guide](AGENTS.md) · [Testnet endpoints and operations](hosting/sites/README.md)
+**Run a public testnet node.** Give this repository URL to an agent, or clone it and run `npm start` with Node.js 24 or later. A background process creates or reuses its local identity, fetches signed checkpoints and keeps the latest verified ledger state. It continues after the terminal or agent session closes. A GPU, model download and public IP are unnecessary for this role. [Agent setup guide](AGENTS.md) · [Public testnet operations](hosting/sites/README.md)
 
-`node src/cli.mjs verify`, `node src/cli.mjs status` and `node src/cli.mjs routes` also select the public testnet by default. The chain ID stays the same when its hosts change. Use `node scripts/bootstrap.mjs` to create an independent local development network with demo wallets, a sequencer and a provider adapter.
+Run `npm run status` to see the local node's verified height and voting status. `npm stop` stops it and `npm start` resumes it with the same data. `npm run join` performs a single connectivity and provider check. Use `node scripts/bootstrap.mjs` only to create an independent local development network.
 
-## Participant-operated ledger
+## Verification and voting
 
-Registered provider wallet owners can volunteer to validate transactions, including while their inference GPU is offline. Run the command below with the registered wallet and a public HTTPS origin forwarding to local port 8790. Keep the validator online with the same durable data directory.
+Every default node verifies checkpoints. To enter the voting committee, it also needs an authorized wallet and its own reachable HTTPS origin. The operator can authorize the node's public address with `add-validator`; existing registered provider wallets are also eligible. Configure `GPUCHAIN_VALIDATOR_ORIGIN` to point at its listener (loopback port 8790 by default), then restart the node. Keep its wallet and database together in the persistent participant directory (`~/.gpuchain/participant` by default).
 
-~~~powershell
-node src/cli.mjs validator --wallet provider.wallet.json --dir .local/public-validator --origin https://validator.example.org
-~~~
-
-Sites certifies three distinct ready validators after checking their signed opt-ins, database identities, and published endpoints. It atomically closes its writer at the final checkpoint. The same wallets and balances continue under the fixed committee. Two of three validators must be online, able to communicate, and retain their voting state for new transactions to settle. Readers verify the activation and majority signatures. The protocol tolerates one offline member and assumes validators follow the protocol. A fresh install can discover the published validator URLs after Sites is offline. [Public testnet operations](hosting/sites/README.md)
+Sites certifies three ready validators and seals its final checkpoint. Two of those three must retain their voting state and communicate to settle transactions. Other participants continue to verify. [Committee activation and recovery assumptions](hosting/sites/README.md)
 
 ## Metering and epochs
 

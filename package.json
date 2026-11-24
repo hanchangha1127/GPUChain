@@ -7,7 +7,10 @@
   "license": "MIT",
   "engines": { "node": ">=24" },
   "scripts": {
-    "start": "node scripts/join.mjs",
+    "start": "node scripts/participant.mjs start",
+    "status": "node scripts/participant.mjs status",
+    "stop": "node scripts/participant.mjs stop",
+    "join": "node scripts/join.mjs",
     "test": "node --test --test-concurrency=1",
     "cli": "node src/cli.mjs"
   }

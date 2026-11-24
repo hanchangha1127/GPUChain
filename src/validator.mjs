@@ -4,12 +4,12 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { authenticate } from './checkpoint.mjs';
+import { authenticate, verifyAdvance } from './checkpoint.mjs';
 import { certify, consensusCandidate, votePayload } from './consensus.mjs';
 import { addressFromPrivateKey, hash, sign, verify } from './crypto.mjs';
 import { requestJson } from './http.mjs';
-import { EPOCH_TOKENS, replay } from './ledger.mjs';
-import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
+import { canValidate, EPOCH_TOKENS, replay } from './ledger.mjs';
+import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
 
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
 const MAX_TX = 16_384;
@@ -108,43 +108,52 @@ function open(dir,genesis,wallet) {
 }
 
 export async function startValidator({dir,genesis,wallet,origin,port=8790,listen='127.0.0.1',
-  checkpoint,discover,syncIntervalMs=5000,peerTimeoutMs=2000}) {
+  checkpoint,discover,monitor,syncIntervalMs=5000,peerTimeoutMs=2000}) {
   replay([genesis],genesis.hash);
   need(addressFromPrivateKey(wallet.privateKey) === wallet.address,400,'Validator wallet does not match address');
   const publicOrigin = origin && normalizeProviderEndpoint(origin);
   const store = open(dir,genesis,wallet);
   let head, members = [], keys = new Set(), authorityHash;
   let busy = false, closed = false, syncing, timer, url, lastSyncError = null;
+  let voting = false, lastVerifiedAt = null, ledgerUrl = null, enrollmentError = null;
   let advertised = publicOrigin;
   const quorum = () => Math.floor(members.length / 2) + 1;
   const signed = payload => ({address:wallet.address,payload,signature:sign(wallet.privateKey,payload)});
   const session = () => ({chainId:genesis.hash,authorityHash,height:head.state.height+1,previousHash:head.state.tip});
 
+  function enrollmentStatus() {
+    if (voting) return 'voting';
+    if (!head) return 'waiting-for-checkpoint';
+    if (head.authority) {
+      return members.some(v => v.address === wallet.address) ? 'identity-mismatch' : 'committee-fixed';
+    }
+    if (!publicOrigin || isLoopbackEndpoint(publicOrigin)) return 'needs-public-origin';
+    if (!canValidate(head.state,wallet.address)) return 'needs-registration';
+    return 'candidate';
+  }
+
   function install(candidate, persisted=false) {
     authenticate(candidate,genesis.hash);
-    need(candidate.authority?.payload?.validators,409,'Missing validator activation certificate');
-    const authority = hash(candidate.authority);
+    const validators = candidate.authority?.payload.validators ?? [];
+    const member = validators.some(v => v.address === wallet.address && v.url === advertised &&
+      v.instanceId === store.instanceId);
+    need(monitor || member,403,'Wallet, origin or durable voting database does not match the activated roster');
     if (head) {
-      need(authority === authorityHash,409,'Conflicting validator roster');
-      if (candidate.state.height < head.state.height) return false;
-      if (candidate.state.height === head.state.height) {
-        // Different signature subsets/ballots may certify the same value.
-        need(hash(candidate.state) === hash(head.state) && hash(candidate.epochHashes) === hash(head.epochHashes),
-          409,'Conflicting certified checkpoint');
+      verifyAdvance(head,candidate);
+      // Preserve promises and votes for the next slot when refreshing the same certified state.
+      if (head.state.tip === candidate.state.tip && Boolean(head.authority) === Boolean(candidate.authority)) {
+        lastVerifiedAt = new Date().toISOString();
         return false;
       }
-      need(candidate.state.totalWorkTokens >= head.state.totalWorkTokens &&
-        head.epochHashes.every((entry,i) => candidate.epochHashes[i] === entry),409,'Invalid checkpoint continuity');
     }
-    // Only enrolled members may launch the fixed-roster voting role.
-    const validators = candidate.authority.payload.validators;
-    need(validators.some(v => v.address === wallet.address && v.url === advertised &&
-      v.instanceId === store.instanceId),403,'Wallet, origin or durable voting database does not match the activated roster');
     if (!persisted) store.commit(candidate);
     head = candidate;
     members = validators;
     keys = new Set(members.map(v => v.address));
-    authorityHash = authority;
+    authorityHash = candidate.authority && hash(candidate.authority);
+    voting = member;
+    lastVerifiedAt = new Date().toISOString();
+    if (head.authority) enrollmentError = null;
     return true;
   }
 
@@ -155,26 +164,45 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
 
   async function syncNow() {
     if (closed) return;
-    if (!head) {
-      const initial = await discover?.({origin:advertised,url,address:wallet.address,instanceId:store.instanceId});
-      if (initial && !closed) install(initial);
+    if (!voting) {
+      const local = {origin:advertised,url,address:wallet.address,instanceId:store.instanceId};
+      if (monitor) {
+        const observed = await monitor(local);
+        if (closed) return;
+        install(observed?.checkpoint ?? observed);
+        ledgerUrl = observed.url ?? null;
+        if (enrollmentStatus() !== 'candidate' || !discover) {
+          enrollmentError = null;
+          return;
+        }
+      }
+      try {
+        const initial = await discover?.({...local,checkpoint:head,ledgerUrl});
+        if (initial && !closed) install(initial);
+        enrollmentError = null;
+      } catch (err) {
+        enrollmentError = err.message;
+        if (!monitor) throw err;
+      }
     } else {
-      await callPeers(async peer => {
-        if (peer.address === wallet.address || closed) return;
+      const responses = await callPeers(async peer => {
+        if (peer.address === wallet.address || closed) return false;
         const info = await requestJson(peer.url+'/v1/status',{timeoutMs:peerTimeoutMs,maxBytes:MAX_CHECKPOINT});
-        if (info.chainId !== genesis.hash) return;
+        if (info.chainId !== genesis.hash) return false;
         // The bootstrap may disappear just after issuing the activation. A
         // single holder can relay its authenticated snapshot to the other
         // enrolled validators, including members returning after a restart.
-        if (info.mode === 'standby' || info.height < head.state.height) {
+        if (info.mode === 'standby' || info.mode === 'verifier' || info.height < head.state.height) {
           await requestJson(peer.url+'/v1/consensus/commit',
             {body:head,timeoutMs:peerTimeoutMs,maxBytes:MAX_CHECKPOINT});
-          return;
+          return true;
         }
-        if (info.height === head.state.height) return;
+        if (info.height === head.state.height) return info.tip === head.state.tip;
         const remote = await requestJson(peer.url+'/v1/checkpoint',{timeoutMs:peerTimeoutMs,maxBytes:MAX_CHECKPOINT});
         if (!closed) install(remote);
+        return true;
       });
+      need(closed || responses.some(Boolean),503,'No other certified validator confirmed sync');
     }
   }
   function sync() {
@@ -217,7 +245,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
   }
 
   function phase(method,envelope) {
-    need(head,503,'Waiting for activation');
+    need(voting,503,'This node is not an active voting member');
     const s = session();
     const p = envelope?.payload, ballot = p?.ballot;
     checkBallot(ballot);
@@ -262,7 +290,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
   }
 
   async function propose(tx) {
-    need(head,503,'Waiting for activation');
+    need(voting,503,'This node is not an active voting member');
     need(!busy,429,'Validator is proposing another transaction');
     busy = true;
     try {
@@ -322,7 +350,9 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
       }
       if (req.method === 'GET' && path === '/v1/genesis') return send(200,genesis);
       if (req.method === 'GET' && path === '/v1/status') {
-        return send(200,{chainId:genesis.hash,mode:head?'validator':'standby',address:wallet.address,instanceId:store.instanceId,
+        const mode = voting ? 'validator' : head ? 'verifier' : 'standby';
+        return send(200,{chainId:genesis.hash,mode,address:wallet.address,instanceId:store.instanceId,
+          voting,verified:Boolean(head),lastVerifiedAt,ledgerUrl,enrollmentStatus:enrollmentStatus(),enrollmentError,
           height:head?.state.height,tip:head?.state.tip,epoch:head?.state.epoch,
           epochTokens:head?.state.epochTokens,totalWorkTokens:head?.state.totalWorkTokens,
           providers:head?.state.providers,epochTarget:EPOCH_TOKENS,maxOutputTokens:head?.state.maxOutputTokens,
@@ -330,6 +360,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
       }
       if (req.method === 'POST' && path === '/v1/consensus/commit') {
         const incoming = await body(req,MAX_CHECKPOINT);
+        need(incoming?.authority,400,'Commit requires a validator-certified checkpoint');
         install(incoming);
         return send(200,{height:head.state.height,tip:head.state.tip});
       }

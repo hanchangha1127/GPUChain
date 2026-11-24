@@ -96,11 +96,20 @@ test('hosted enrollment requires three live approved owners and commits one fina
       origin:urls[i],instanceId:ids[i],challenge};
     return Response.json({payload,signature:sign(members[wrongKey ? (i+1)%members.length : i].privateKey,payload)});
   }});
-  const {genesis,request,seq,payer,sqlite,submit} = fixture(t,members.map(m=>m.address),handler);
+  const {genesis,request,seq,payer,sqlite,submit} = fixture(t,members.slice(1).map(m=>m.address),handler);
   const intent = (i,at) => signEnrollment(genesis.hash,members[i],urls[i],ids[i],at);
   const propose = body => request('/v1/consensus/enroll',{method:'POST',
     headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   assert.equal((await propose(signEnrollment(genesis.hash,payer,urls[0],ids[0]))).status,400);
+  assert.equal((await propose(intent(0))).status,400);
+  const permission = {type:'add-validator',chainId:genesis.hash,from:seq.address,nonce:1,validator:members[0].address};
+  const self = {...permission,from:members[0].address};
+  assert.equal((await submit({payload:self,signature:sign(members[0].privateKey,self)})).status,400);
+  assert.equal((await submit({payload:permission,signature:sign(seq.privateKey,permission)})).status,201);
+  const permissions = (await (await request('/v1/checkpoint')).json()).state;
+  assert.deepEqual(permissions.validatorAddresses,[members[0].address]);
+  assert.ok(!permissions.providers.includes(members[0].address));
+  assert.equal((await (await request('/v1/status')).json()).eligibleValidatorCount,5);
   assert.equal((await propose(signEnrollment(genesis.hash,members[0],'https://localhost',ids[0]))).status,400);
   assert.equal((await propose(intent(0,Date.now()-180_000))).status,400);
   const altered = intent(0);
@@ -134,7 +143,7 @@ test('hosted enrollment requires three live approved owners and commits one fina
   pause.release.resolve();
   assert.equal((await staleAttempt).status,409);
   const last = await (await request('/v1/checkpoint')).json();
-  assert.equal(last.state.height,1);
+  assert.equal(last.state.height,2);
   assert.equal(last.authority,undefined);
   const attempts = await Promise.all([propose(intent(2)),propose(intent(3))]);
   assert.ok(attempts.some(r=>r.ok));
@@ -143,6 +152,7 @@ test('hosted enrollment requires three live approved owners and commits one fina
   assert.deepEqual(after.state,last.state);
   assert.equal(after.authority.payload.anchorHash,hash(last));
   assert.equal(after.authority.payload.validators.length,3);
+  assert.ok(after.authority.payload.validators.some(member=>member.address === members[0].address));
   for (const r of attempts.filter(r=>r.ok)) {
     const reply = await r.json();
     if (reply.active) assert.deepEqual(reply.checkpoint,after);

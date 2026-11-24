@@ -54,6 +54,16 @@ async function peer(t, checkpoint, mode = 'sequencer') {
   return p;
 }
 
+test('verifiers can serve authenticated reads but cannot supply their own upstream or confirm writes',async t=>{
+  const {chainId,first} = network();
+  const mirror = await peer(t,first,'verifier');
+  mirror.instanceId = randomUUID();
+  const opts = {chainId,cacheDir:await cache(t),seeds:'',refresh:null,directory:{chainId,endpoints:[mirror.url]}};
+  assert.equal((await resolvePublicLedger(opts)).url,mirror.url);
+  await assert.rejects(resolvePublicLedger({...opts,excludeInstanceId:mirror.instanceId}),/No reachable/);
+  await assert.rejects(resolvePublicLedger({...opts,write:true}),/No reachable/);
+});
+
 test('a scheduled refresh learns a standby while Sites is healthy, then permits writes with Sites and GitHub offline', async t => {
   const {chainId,first,pay} = network();
   const hosted = await peer(t,first);
