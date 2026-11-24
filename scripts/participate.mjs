@@ -7,6 +7,7 @@ import { startValidator } from '../src/validator.mjs';
 import { enrollAt } from '../src/validator-enroll.mjs';
 import { startWalletUi } from '../src/wallet-ui.mjs';
 import { createWalletSender } from '../src/wallet-send.mjs';
+import { startAutoProvider } from '../src/auto-provider.mjs';
 
 export async function startParticipant() {
   const {dir,wallet,port,origin} = await participantConfig();
@@ -18,9 +19,16 @@ export async function startParticipant() {
     monitor:({instanceId}) => resolvePublicLedger({activation:true,excludeInstanceId:instanceId}),
     discover:origin ? ({instanceId,ledgerUrl}) => enrollAt(ledgerUrl,publicGenesis.hash,wallet,origin,instanceId) : undefined,
   });
-  let gui;
+  let gui, auto;
   const sender=createWalletSender({wallet});
   try {
+    if (process.env.GPUCHAIN_AUTO_PROVIDER !== '0' && !process.env.GPUCHAIN_LOCAL_PROVIDER_URL) {
+      const backend = process.env.GPUCHAIN_STRATA_URL;
+      auto = await startAutoProvider({wallet,chainId:publicGenesis.hash,
+        backendUrls:backend ? [backend] : undefined,engine:process.env.GPUCHAIN_STRATA_ENGINE,
+        apiKey:process.env.STRATA_API_KEY,
+        readState:async()=> (await resolvePublicLedger({write:true})).state});
+    }
     const options = {getSnapshot:node.snapshot,port:Number(guiPort),providerUrl:process.env.GPUCHAIN_LOCAL_PROVIDER_URL,sender};
     try { gui = await startWalletUi(options); }
     catch (err) {
@@ -28,11 +36,13 @@ export async function startParticipant() {
       gui = await startWalletUi({...options,port:0});
     }
   } catch (err) {
-    await node.close();
+    try { await auto?.close(); } finally { await node.close(); }
     throw err;
   }
   return {url:node.url,guiUrl:gui.url,issueUnlock:sender.issueCode,async close() {
-    try { await gui.close(); } finally { await node.close(); }
+    try { await gui.close(); } finally {
+      try { await auto?.close(); } finally { await node.close(); }
+    }
   }};
 }
 

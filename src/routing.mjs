@@ -12,7 +12,7 @@ const TIMEOUT_MS = 900;
 const BUDGET_MS = 3000;
 const MAX_CANDIDATES = 64;
 
-export async function probeProvider(candidate, chainId, minOutput) {
+export async function probeProvider(candidate, chainId, minOutput, reasoning = false) {
   const challenge = randomBytes(16).toString('hex');
   const started = performance.now();
   const {payload, signature} = await requestJson(candidate.url + '/v1/probe?challenge=' + challenge,
@@ -21,6 +21,7 @@ export async function probeProvider(candidate, chainId, minOutput) {
   if (payload?.domain !== PROBE_DOMAIN || payload.challenge !== challenge || payload.chainId !== chainId ||
       payload.provider !== candidate.provider || payload.model !== MODEL || payload.contextWindow !== CONTEXT ||
       !kvCacheAtLeastQ8(payload.kvCache) ||
+      (reasoning && payload.reasoningOptions !== 1) ||
       payload.available !== true || !Number.isSafeInteger(payload.maxOutputTokens) ||
       payload.maxOutputTokens < minOutput || payload.maxOutputTokens > CONTEXT ||
       !verify(candidate.provider, payload, signature)) {
@@ -30,7 +31,7 @@ export async function probeProvider(candidate, chainId, minOutput) {
 }
 
 /** Rank ready providers from a verified ledger snapshot using only public challenge responses. */
-export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 1} = {}) {
+export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 1, reasoning = false} = {}) {
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 ||
       maxOutputTokens > Math.min(CONTEXT, state.maxOutputTokens ?? CONTEXT)) return [];
   const allowLocal = ledgerUrl && isLoopbackEndpoint(ledgerUrl);
@@ -57,7 +58,7 @@ export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 
       while (next < ready.length && performance.now() + TIMEOUT_MS <= deadline) {
         const candidate = ready[next++];
         try {
-          candidate.samples.push(await probeProvider(candidate, state.chainId, maxOutputTokens));
+          candidate.samples.push(await probeProvider(candidate, state.chainId, maxOutputTokens, reasoning));
         } catch {
           // An unreachable, busy or ineligible node loses its earlier measurements.
           candidate.samples.length = 0;

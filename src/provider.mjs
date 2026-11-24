@@ -6,6 +6,7 @@ import { readVerifiedState } from './node.mjs';
 import { requestJson } from './http.mjs';
 import { PROBE_DOMAIN } from './routing.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
+import { REASONING_EFFORTS, validateReasoningOptions, backendReasoning } from './reasoning.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_REQUEST_AGE_MS = 10 * 60 * 1000;
@@ -127,8 +128,10 @@ async function readBody(stream) {
 }
 
 function checkRequest({ request, signature, messages }, chainId, provider) {
+  const fields = [...REQUEST_FIELDS,...['reasoningEffort','reasoningBudgetTokens'].filter(k=>request && Object.hasOwn(request,k))].sort();
   requireValue(request && typeof request === 'object' &&
-    Object.keys(request).sort().join('|') === REQUEST_FIELDS.join('|'), 400, 'Invalid request fields');
+    Object.keys(request).sort().join('|') === fields.join('|'), 400, 'Invalid request fields');
+  try { validateReasoningOptions(request); } catch (err) { throw new ProviderError(400,err.message); }
   requireValue(request.type === 'inference-request' && request.chainId === chainId &&
     request.provider === provider && request.payer !== provider && typeof request.payer === 'string' &&
     /^[0-9a-f]{64}$/.test(request.payer) && typeof request.messagesHash === 'string' &&
@@ -153,9 +156,7 @@ function checkRequest({ request, signature, messages }, chainId, provider) {
     400, 'Missing user message or mismatched messages hash');
 }
 
-export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = 'http://127.0.0.1:8000/v1',
-  engine = 'ryzenstrata', modelId, apiKey, timeoutMs = 60 * 60 * 1000,
-  readState = readVerifiedState }) {
+export function createStrataBackend({strataUrl = 'http://127.0.0.1:8000/v1', engine = 'ryzenstrata', modelId, apiKey} = {}) {
   const base = backendBase(strataUrl);
   requireValue(engine==='ryzenstrata' || engine==='strata',400,'Unknown Strata engine');
   const requested = modelId ?? (engine==='ryzenstrata' ? 'qwen3.8-flash-next-q2_0' : undefined);
@@ -164,14 +165,6 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
       (qwenVariant(requested)!==null || (engine==='strata' && quantId.test(requested))),
     400,'Invalid Strata backend model ID');
   }
-  requireValue(/^[0-9a-f]{64}$/.test(chainId) && isCount(timeoutMs, 1) &&
-    timeoutMs <= 2147483647, 400, 'Invalid chain ID or timeout');
-  const seen = new Map();
-  let busy = false;
-  let activeProfile;
-  // Cache only the latest response so a dropped connection can be retried without retaining every chat.
-  let previous;
-  let clearPrevious;
 
   async function backend(path, body, deadline = 10_000, root = base) {
     const headers = {};
@@ -192,24 +185,47 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
       })
     ]);
     const model=selectModel(catalog,engine,requested);
-    return {...model,...runtimePrecision(metrics,model)};
+    return {...model,...runtimePrecision(metrics,model),engine};
   }
+  return {profile,backend};
+}
+
+export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, engine, modelId, apiKey,
+  timeoutMs = 60 * 60 * 1000, readState = readVerifiedState, getBackend }) {
+  requireValue(/^[0-9a-f]{64}$/.test(chainId) && isCount(timeoutMs, 1) &&
+    timeoutMs <= 2147483647, 400, 'Invalid chain ID or timeout');
+  const fixed = getBackend ? undefined : createStrataBackend({strataUrl,engine,modelId,apiKey});
+  function selected() {
+    const adapter = getBackend ? getBackend() : fixed;
+    requireValue(adapter,503,'Waiting for an eligible local Strata backend');
+    return adapter;
+  }
+  const seen = new Map();
+  let busy = false;
+  let activeProfile;
+  // Cache only the latest response so a dropped connection can be retried without retaining every chat.
+  let previous;
+  let clearPrevious;
 
   // Coalesce simultaneous readiness checks and avoid a backend call for each RTT sample.
   // Inference independently checks the live profile immediately before generation.
   let probeProfile;
   let probeUntil = 0;
+  let probedBackend;
   async function probe(challenge) {
     requireValue(!busy, 429, 'Provider is handling another request');
-    if (!probeProfile || Date.now() >= probeUntil) {
+    const adapter = selected();
+    if (!probeProfile || adapter !== probedBackend || Date.now() >= probeUntil) {
+      probedBackend = adapter;
       probeUntil = Infinity;
-      probeProfile = profile(800).finally(() => { probeUntil = Date.now() + 250; });
+      probeProfile = adapter.profile(800).finally(() => { if (probedBackend === adapter) probeUntil = Date.now() + 250; });
     }
     const {outputLimit,kvCache} = await probeProfile;
+    requireValue(selected()===adapter,503,'Strata selection changed during probe');
     requireValue(!busy, 429, 'Provider is handling another request');
     const payload = {
       domain:PROBE_DOMAIN, chainId, provider:wallet.address, challenge, available:true,
-      model:MODEL, contextWindow:CONTEXT, kvCache, maxOutputTokens:Math.min(CONTEXT, outputLimit ?? CONTEXT)
+      model:MODEL, contextWindow:CONTEXT, kvCache, reasoningOptions:1, maxOutputTokens:Math.min(CONTEXT, outputLimit ?? CONTEXT)
     };
     return {payload, signature:sign(wallet.privateKey, payload)};
   }
@@ -239,6 +255,8 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
     }
     requireValue(!seen.has(key), 409, 'Request nonce has already been used at this provider');
     requireValue(seen.size < 4096, 503, 'Provider replay window is full');
+    // Pin the complete request, including final metering checks, to the same backend.
+    const {profile,backend}=selected();
     const loaded=await profile();
     const { capacity, outputLimit, modelId, kvCache } = loaded;
     requireValue(!isCount(outputLimit, 1) || request.maxOutputTokens <= outputLimit,
@@ -247,7 +265,7 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
       // Both Strata engines expose their active tokenizer and template through this endpoint.
       const system = messages[0].role === 'system' ? messages[0].content : undefined;
       const estimate = await backend('/messages/count_tokens', {
-        model: modelId, messages: system === undefined ? messages : messages.slice(1), system
+        model: modelId, messages: system === undefined ? messages : messages.slice(1), system, ...backendReasoning(request,true)
       });
       requireValue(isCount(estimate?.input_tokens, 1), 502, 'Strata did not return a prompt count');
       requireValue(estimate.input_tokens <= request.maxInputTokens, 400, 'Prompt exceeds signed input budget');
@@ -257,7 +275,7 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
     let answer;
     try {
       answer = await backend('/chat/completions', {model:modelId,messages,
-        max_tokens:request.maxOutputTokens,stream:false},timeoutMs);
+        max_tokens:request.maxOutputTokens,stream:false,...backendReasoning(request)},timeoutMs);
     } finally {
       activeProfile = undefined;
     }
@@ -313,9 +331,10 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
       }
       if (req.method === 'GET' && req.url === '/v1/info') {
         // The running request already passed the loaded-model and capacity checks.
-        const current = activeProfile ?? await profile();
+        const current = activeProfile ?? await selected().profile();
         return send(200, { provider: wallet.address, chainId, model: MODEL, contextWindow: CONTEXT,
-          engine,backendModel:current.modelId, kvCache:current.kvCache, busy, inferenceActive:activeProfile!==undefined });
+          engine:current.engine,backendModel:current.modelId, kvCache:current.kvCache,
+          reasoningEfforts:REASONING_EFFORTS, reasoningBudget:true, busy, inferenceActive:activeProfile!==undefined });
       }
       requireValue(req.method === 'POST' && req.url === '/v1/infer', 404, 'Route not found');
       requireValue((req.headers['content-type'] ?? '').split(';')[0].trim() === 'application/json',

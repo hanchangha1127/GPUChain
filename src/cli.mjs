@@ -16,6 +16,7 @@ import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
 import { submitSignedTransaction } from './submit-transaction.mjs';
 import { startValidator } from './validator.mjs';
 import { enrollAt } from './validator-enroll.mjs';
+import { reasoningEffort, validateReasoningOptions } from './reasoning.mjs';
 
 const usage = `GPUChain
   wallet   --out FILE
@@ -37,6 +38,7 @@ const usage = `GPUChain
   routes   [--genesis FILE] [--ledger URL] [--max-output N] [--wallet KEY]
   chat     [--genesis FILE] --wallet KEY [--provider-url URL --provider-address ADDRESS]
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
+           [--reasoning-effort none|low|medium|high] [--reasoning-budget-tokens N]
   settings --genesis FILE --wallet SEQUENCER_KEY --max-output N [--ledger URL]
   add-provider --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS [--url URL] [--ledger URL]
   add-validator --wallet SEQUENCER_KEY --address ADDRESS [--genesis FILE] [--ledger URL]
@@ -59,7 +61,8 @@ const flags = {
   transfer: ['genesis','ledger','wallet','to','coins'],
   'issue-reserve': ['genesis','ledger','wallet'],
   'promote-mainnet': ['genesis','ledger','wallet'],
-  chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output'],
+  chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output',
+    'reasoning-effort','reasoning-budget-tokens'],
   settings: ['genesis','ledger','wallet','max-output'],
   'add-provider': ['genesis','ledger','wallet','address','url'],
   'add-validator': ['genesis','ledger','wallet','address'],
@@ -143,15 +146,22 @@ async function chat(v, wallet, ledger, resolveSettlement) {
   if (!prompt.trim()) throw Error('Prompt is empty');
   const maxOutputTokens = uint(v['max-output'] ?? Math.min(512,state.maxOutputTokens), 'max-output', 1, state.maxOutputTokens);
   const maxInputTokens = uint(v['max-input'] ?? CONTEXT - maxOutputTokens, 'max-input', 1, CONTEXT - maxOutputTokens);
+  const reasoning = {};
+  if (v['reasoning-effort'] !== undefined) reasoning.reasoningEffort = reasoningEffort(v['reasoning-effort']);
+  if (v['reasoning-budget-tokens'] !== undefined) {
+    reasoning.reasoningBudgetTokens = uint(v['reasoning-budget-tokens'],'reasoning-budget-tokens',0,maxOutputTokens);
+  }
+  validateReasoningOptions({...reasoning,maxOutputTokens});
+  const needsReasoning = Object.keys(reasoning).length > 0;
   const cap = charge({ inputTokens:maxInputTokens, cachedTokens:0, outputTokens:maxOutputTokens });
   if (decodeAmount(state.balances[wallet.address] ?? 0) < BigInt(cap)) throw Error('Insufficient balance for authorized token limits');
   let target;
   if (v['provider-address'] !== undefined) {
     target = {provider:address(v['provider-address']),url:endpoint(v['provider-url'])};
     if (!state.providers.includes(target.provider)) throw Error('Provider is absent from trusted chain');
-    target.latencyMs = await probeProvider(target,state.chainId,maxOutputTokens);
+    target.latencyMs = await probeProvider(target,state.chainId,maxOutputTokens,needsReasoning);
   } else {
-    const ranked = await rankProviders(state,{payer:wallet.address,ledgerUrl:base,maxOutputTokens});
+    const ranked = await rankProviders(state,{payer:wallet.address,ledgerUrl:base,maxOutputTokens,reasoning:needsReasoning});
     target = ranked[0];
     if (!target) throw Error('No available registered provider responded. Check advertised endpoints with routes.');
   }
@@ -160,7 +170,7 @@ async function chat(v, wallet, ledger, resolveSettlement) {
   const request = {
     type:'inference-request', chainId:state.chainId, payer:wallet.address, provider,
     nonce:nextNonce(state,wallet.address), expiresAt:Date.now() + 300_000,
-    messagesHash:hash(messages), maxOutputTokens, maxInputTokens
+    messagesHash:hash(messages), maxOutputTokens, maxInputTokens,...reasoning
   };
   const { message, payload, providerSignature } = await requestJson(url + '/v1/infer',
     {body:{request, signature:sign(wallet.privateKey,request), messages}, timeoutMs:3_630_000});
@@ -186,7 +196,7 @@ async function chat(v, wallet, ledger, resolveSettlement) {
     throw Error('Wallet nonce changed during inference; receipt could not be settled');
   }
   const settlement = await submit(targetLedger,expected,wallet,providerSignature);
-  return { provider, providerUrl:url, latencyMs:target.latencyMs, message,
+  return { provider, providerUrl:url, latencyMs:target.latencyMs, reasoning, message,
     usage:{inputTokens,cachedTokens,outputTokens}, coins:formatCoins(charge(expected)), settlement };
 }
 
