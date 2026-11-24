@@ -2,23 +2,19 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { parseArgs } from 'node:util';
-import { addressFromPrivateKey, generateWallet, sign, verify, hash } from './crypto.mjs';
-import { charge, CONTEXT, createGenesis, DISTRIBUTION_RESERVE, EPOCH_TOKENS, MAINNET, mainnetPromotionPayload, MODEL, replay } from './ledger.mjs';
-import { decodeAmount, formatCoins, parseCoins } from './amount.mjs';
+import { addressFromPrivateKey, generateWallet, sign } from './crypto.mjs';
+import { CONTEXT, createGenesis, DISTRIBUTION_RESERVE, EPOCH_TOKENS, MAINNET, mainnetPromotionPayload, replay } from './ledger.mjs';
+import { formatCoins, parseCoins } from './amount.mjs';
 import { SALE_TERMS } from './sale-policy.mjs';
 import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
-import { requestJson } from './http.mjs';
-import { probeProvider } from './routing.mjs';
 import { inferenceRoutes } from './inference-routes.mjs';
-import { relayInfer } from './relay-client.mjs';
-import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
+import { purchaseChat } from './consumer-chat.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
 import { submitSignedTransaction } from './submit-transaction.mjs';
 import { startValidator } from './validator.mjs';
 import { enrollAt } from './validator-enroll.mjs';
-import { reasoningEffort, validateReasoningOptions } from './reasoning.mjs';
 
 const usage = `GPUChain
   wallet   --out FILE
@@ -129,9 +125,8 @@ async function walletFrom(values) {
 }
 
 // Check the transient sequencer acknowledgment without fetching pruned transaction history.
-async function submit(ledger, payload, wallet, providerSignature) {
+async function submit(ledger, payload, wallet) {
   const tx = { payload, signature:sign(wallet.privateKey, payload) };
-  if (providerSignature) tx.providerSignature = providerSignature;
   return submitSignedTransaction(ledger,tx);
 }
 
@@ -139,74 +134,18 @@ function nextNonce(state, from) {
   return (state.nonces[from] || 0) + 1;
 }
 
-async function chat(v, wallet, ledger, resolveSettlement) {
-  const {url:base,state} = ledger;
-  const transport = v.transport ?? 'auto';
-  if (!['auto','direct','relay'].includes(transport)) throw Error('Transport must be auto, direct or relay');
-  if (v['provider-url'] !== undefined && (v['provider-address'] === undefined || transport === 'relay')) {
-    throw Error('A direct --provider-url requires --provider-address and a direct or automatic transport');
-  }
+async function chat(v, wallet, ledger, resolveLedger) {
   if ((v.text !== undefined) === (v['text-file'] !== undefined)) throw Error('Supply one of --text and --text-file');
   const prompt = v.text ?? await readFile(v['text-file'],'utf8');
   if (!prompt.trim()) throw Error('Prompt is empty');
-  const maxOutputTokens = uint(v['max-output'] ?? Math.min(512,state.maxOutputTokens), 'max-output', 1, state.maxOutputTokens);
-  const maxInputTokens = uint(v['max-input'] ?? CONTEXT - maxOutputTokens, 'max-input', 1, CONTEXT - maxOutputTokens);
-  const reasoning = {};
-  if (v['reasoning-effort'] !== undefined) reasoning.reasoningEffort = reasoningEffort(v['reasoning-effort']);
-  if (v['reasoning-budget-tokens'] !== undefined) {
-    reasoning.reasoningBudgetTokens = uint(v['reasoning-budget-tokens'],'reasoning-budget-tokens',0,maxOutputTokens);
-  }
-  validateReasoningOptions({...reasoning,maxOutputTokens});
-  const needsReasoning = Object.keys(reasoning).length > 0;
-  const cap = charge({ inputTokens:maxInputTokens, cachedTokens:0, outputTokens:maxOutputTokens });
-  if (decodeAmount(state.balances[wallet.address] ?? 0) < BigInt(cap)) throw Error('Insufficient balance for authorized token limits');
-  let target;
-  if (v['provider-url'] !== undefined) {
-    target = {provider:address(v['provider-address']),url:endpoint(v['provider-url']),transport:'direct',latencyKind:'provider-rtt'};
-    if (!state.providers.includes(target.provider)) throw Error('Provider is absent from trusted chain');
-    target.latencyMs = await probeProvider(target,state.chainId,maxOutputTokens,needsReasoning);
-  } else {
-    const ranked = await inferenceRoutes(ledger,{payer:wallet.address,transport,maxOutputTokens,
-      provider:v['provider-address'] === undefined ? undefined : address(v['provider-address']),reasoning:needsReasoning});
-    target = ranked[0];
-    if (!target) throw Error('No available registered provider responded. Check advertised endpoints with routes.');
-  }
-  const {provider,url} = target;
-  const messages = [{role:'user',content:prompt}];
-  const request = {
-    type:'inference-request', chainId:state.chainId, payer:wallet.address, provider,
-    nonce:nextNonce(state,wallet.address), expiresAt:Date.now() + 300_000,
-    messagesHash:hash(messages), maxOutputTokens, maxInputTokens,...reasoning
-  };
-  const signature = sign(wallet.privateKey,request);
-  const { message, payload, providerSignature } = target.transport==='relay'
-    ? await relayInfer({wallet,relayUrl:url,chainId:state.chainId,provider,offer:target.offer,request,signature,messages})
-    : await requestJson(url+'/v1/infer',{body:{request,signature,messages},timeoutMs:3_630_000});
-  if (message?.role !== 'assistant' ||
-      !(typeof message.content === 'string' || (message.content === null && typeof message.reasoning_content === 'string'))) {
-    throw Error('Invalid assistant message');
-  }
-  const inputTokens = uint(payload?.inputTokens,'receipt inputTokens',0,maxInputTokens);
-  const cachedTokens = uint(payload.cachedTokens,'receipt cachedTokens',0,inputTokens);
-  const outputTokens = uint(payload.outputTokens,'receipt outputTokens',0,maxOutputTokens);
-  const expected = {
-    type:'inference', chainId:state.chainId, from:wallet.address, provider,
-    nonce:request.nonce, model:MODEL, contextWindow:CONTEXT,
-    requestHash:hash(request), responseHash:hash(message), inputTokens, cachedTokens, outputTokens
-  };
-  if (state.networkStage === 'mainnet') {
-    if (!kvCacheAtLeastQ8(payload.kvCache)) throw Error('Receipt requires K and V at Q8 or above');
-    expected.kvCache = payload.kvCache;
-  }
-  if (hash(payload) !== hash(expected) || !verify(provider,expected,providerSignature)) throw Error('Invalid provider receipt');
-  const targetLedger = resolveSettlement ? await resolveSettlement() : ledger;
-  if (nextNonce(targetLedger.state,wallet.address) !== request.nonce) {
-    throw Error('Wallet nonce changed during inference; receipt could not be settled');
-  }
-  const settlement = await submit(targetLedger,expected,wallet,providerSignature);
-  return { provider, providerUrl:url, transport:target.transport, latencyKind:target.latencyKind,
-    latencyMs:target.latencyMs, reasoning, message,
-    usage:{inputTokens,cachedTokens,outputTokens}, coins:formatCoins(charge(expected)), settlement };
+  return purchaseChat({
+    wallet, messages:[{role:'user',content:prompt}], transport:v.transport,
+    providerAddress:v['provider-address'], providerUrl:v['provider-url'] === undefined ? undefined : endpoint(v['provider-url']),
+    maxInputTokens:v['max-input'] === undefined ? undefined : uint(v['max-input'],'max-input',1,CONTEXT),
+    maxOutputTokens:v['max-output'] === undefined ? undefined : uint(v['max-output'],'max-output',1,CONTEXT),
+    reasoningEffort:v['reasoning-effort'], reasoningBudgetTokens:v['reasoning-budget-tokens'] === undefined
+      ? undefined : uint(v['reasoning-budget-tokens'],'reasoning-budget-tokens',0,CONTEXT)
+  }, {ledger,resolveLedger});
 }
 
 function print(data) { process.stdout.write(JSON.stringify(data) + '\n'); }
@@ -337,8 +276,11 @@ async function main() {
     }
     return print(await submit(ledger,mainnetPromotionPayload(state),wallet));
   }
-  if (command === 'chat') return print(await chat(v,wallet,ledger,
-    discover ? () => resolvePublicLedger({write:true}) : undefined));
+  if (command === 'chat') return print(await chat(v,wallet,ledger,async () => {
+    if (discover) return resolvePublicLedger({write:true});
+    const refreshed = await readCheckpoint(fixed,genesis.hash);
+    return {url:fixed,state:refreshed.state,checkpoint:refreshed};
+  }));
   const common = {chainId:state.chainId,from:wallet.address,nonce:nextNonce(state,wallet.address)};
   let details;
   if (command === 'transfer') {

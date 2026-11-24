@@ -42,6 +42,26 @@ $runner.Id
 
 The bootstrap reuses the local wallet files and ledger on subsequent runs. The test network assigns one coin to the user wallet on its first creation. Preserve the entire `.local` directory between runs. Wallet JSON contains Ed25519 private keys. Share the public address or public genesis file when connecting peers. Keep the private files on their owners' machines.
 
+## Set up inference on a requesting computer
+
+When the user asks to use GPUChain from OpenCode, run `npm run opencode:setup` **on the requesting computer**, from this checkout, with Node.js 24 or later and OpenCode 2.x. The script starts the participant, enables its local OpenAI-compatible gateway and merges the GPUChain provider into the user's config. With an older running participant, apply the checkout update and restart that same participant. For JSONC with comments, generate a separate file with `npm run opencode:setup -- --config NEW_FILE.json` and merge only its `providers.gpuchain` entry, preserving comments. Tell the user to reopen OpenCode and select `gpuchain/qwen3.8-flash-next` using `/models`. Use the reported `openAiUrl`, normally `http://127.0.0.1:8792/v1`. Keep the participant's `opencode.token` local. It authorizes spending on inference. Setup verifies authenticated model discovery without generating tokens.
+
+To select inference reasoning on OpenCode 2.4.1, select GPUChain in `/models` and press **Ctrl+T** in the terminal UI to cycle model variants. The four configured variants are `none`, `low`, `medium` and `high`. The exact one-run selector is `opencode run --model "gpuchain/qwen3.8-flash-next#high" "Review this change."`. Use a model variant's `body` to request a fixed thinking budget, for example `{"id":"high-512","body":{"reasoning_effort":"high","reasoning_budget_tokens":512}}`. A raw chat request accepts those same body fields. Setup sets `max_tokens` to at most 4,096 for OpenCode by default. Thinking tokens share this output limit. A budget must be between zero and the requested output limit, and effort `none` accepts only zero or an omitted budget. [OpenCode model variants](https://opencode.ai/docs/models/#variants)
+
+For a requester asking which address to use, distinguish the buyer's loopback API, the public ledger/relay and the provider's private engine on 8080. OpenCode sends chat requests to the buyer's gateway. The gateway discovers a registered remote provider and can send encrypted jobs through the outbound relay. Follow-ups prefer the previous provider for KV-cache reuse. The final receipt supplies the actual cached token count. Check that the requesting participant has the expected funded address and that a different eligible provider is available. Run the following commands on Windows when the user requests a paid CLI inference test. The public ledger pin is optional. Omit `--ledger $ledger` to allow discovery of successor origins.
+
+~~~powershell
+$dataDir = if ($env:GPUCHAIN_PARTICIPANT_DIR) { $env:GPUCHAIN_PARTICIPANT_DIR } else { Join-Path $env:USERPROFILE '.gpuchain/participant' }
+$buyer = Get-Content -Raw -LiteralPath (Join-Path $dataDir 'participant.json') | ConvertFrom-Json
+$status = node scripts/participant.mjs status | ConvertFrom-Json
+if ($buyer.address -ne $status.address) { throw 'Check the participant wallet and directory' }
+$buyer.address
+$ledger = 'https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site'
+node src/cli.mjs balance --ledger $ledger --address $buyer.address
+node src/cli.mjs routes --ledger $ledger --transport relay --wallet $buyer.walletFile
+node src/cli.mjs chat --ledger $ledger --transport relay --wallet $buyer.walletFile --text "Reply with OK." --max-input 1024 --max-output 32
+~~~
+
 ## Connect the inference engine
 
 Use `--engine ryzenstrata` (the default) for RYZENStrata or `--engine strata` for upstream Strata. Both `node src/cli.mjs provider` and `node scripts/bootstrap.mjs` accept `--engine`, `--strata` and `--model-id`. RYZENStrata defaults to `qwen3.8-flash-next-q2_0`. Upstream Strata can discover a unique eligible loaded model; specify its qualified ID when multiple models match. Only **Qwen3.8-Flash-Next** and supported quantizations of those weights qualify. Both engines must report at least **262,144 context tokens** and active **K and V caches each at Q8 or higher**. Q2_0 model weights can be paired with Q8 K/V. The adapter checks the native engine's `/metrics` model, context and KV format before generation and again before signing. Missing, low-precision or mixed K8/V4 cache evidence prevents settlement. [Upstream Strata](https://github.com/Niko1221/Strata) · [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)

@@ -10,6 +10,8 @@ const CHUNK = 512*1024;
 const TTL = 60_000;
 const RUN = 3_660_000;
 const DONE = 300_000;
+const FRAME_LIMIT = 128 * 1024;
+const WINDOW = 24;
 const hex = v => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 const smallHex = v => typeof v === 'string' && /^[0-9a-f]{32}$/.test(v);
 const integer = v => Number.isSafeInteger(v);
@@ -19,7 +21,8 @@ function demand(ok,status,reason) { if (!ok) throw Object.assign(Error(reason),{
 const extra = {
   presence:['provider','publicKey','model','contextWindow','kvCache','maxOutputTokens','available','expiresAt'],
   submit:['payer','provider','jobId','providerKey','clientKey','requestHash','boxHash','nonce','maxInputTokens','maxOutputTokens','expiresAt'],
-  poll:['provider','salt'], complete:['provider','jobId','boxHash','salt'], result:['payer','jobId','salt']
+  poll:['provider','salt'], complete:['provider','jobId','boxHash','salt'], result:['payer','jobId','salt'],
+  frame:['provider','jobId','index','boxHash','salt']
 };
 
 function fields(obj,names) {
@@ -48,11 +51,20 @@ async function input(request,limit) {
 }
 
 function authenticate(op,body,state,now) {
-  const boxed=op==='submit' || op==='complete';
+  const boxed=op==='submit' || op==='complete' || op==='frame';
   demand(fields(body,boxed?['payload','signature','box']:['payload','signature']),400,'Invalid relay envelope');
   const p=body.payload;
   const names=['domain','chainId','issuedAt',...extra[op]];
   if(op==='presence' && Object.hasOwn(p??{},'reasoningOptions')) names.push('reasoningOptions');
+  if(['presence','submit'].includes(op) && Object.hasOwn(p??{},'chatProtocol')) {
+    demand(p.chatProtocol===1,400,'Unsupported chat protocol'); names.push('chatProtocol');
+  }
+  if(op==='submit' && Object.hasOwn(p??{},'stream')) {
+    demand(p.stream===true && p.chatProtocol===1,400,'Invalid streaming request'); names.push('stream');
+  }
+  if(op==='result' && Object.hasOwn(p??{},'after')) {
+    demand(integer(p.after) && p.after>=0,400,'Invalid frame cursor'); names.push('after');
+  }
   if(op==='submit') for(const name of ['reasoningEffort','reasoningBudgetTokens']) if(Object.hasOwn(p??{},name)) names.push(name);
   demand(fields(p,names) && p.domain==='gpuchain/relay-'+op+'/v1' && p.chainId===state.chainId &&
     integer(p.issuedAt) && p.issuedAt>now-TTL && p.issuedAt<=now+10_000,400,'Invalid or stale relay payload');
@@ -143,6 +155,7 @@ async function submit(db,b,p,state,now) {
   demand(presence,409,'Provider presence expired');
   const offer=JSON.parse(presence.advert).payload;
   demand(offer.maxOutputTokens>=p.maxOutputTokens &&
+    (p.chatProtocol===undefined || offer.chatProtocol===1) &&
     (!(p.reasoningEffort!==undefined || p.reasoningBudgetTokens!==undefined) || offer.reasoningOptions===1),409,'Provider capability changed');
   const meta=JSON.stringify({payload:p,signature:b.signature});
   const [saved]=await db.batch([db.prepare(`INSERT OR IGNORE INTO relay_jobs
@@ -192,6 +205,46 @@ async function complete(db,b,p,now) {
   return response({jobId:p.jobId,status:'done'});
 }
 
+// direction=2 holds only unread, individually authenticated live stream fragments.
+// The persisted cursor makes retries safe if either HTTP acknowledgement is lost.
+async function appendFrame(db,b,p,now) {
+  demand(integer(p.index) && p.index>=1 && p.index<=1_000_000 && b.box.length<=FRAME_LIMIT,400,'Invalid frame');
+  const encoded=JSON.stringify(b);
+  const [,changed]=await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO relay_chunks(job_id,direction,part,data)
+      SELECT id,2,?,? FROM relay_jobs WHERE id=? AND provider=? AND phase='running' AND expires_ms>?
+      AND json_extract(request_meta,'$.payload.stream')=1 AND stream_tail=? AND stream_tail-stream_ack<?`)
+      .bind(p.index,encoded,p.jobId,p.provider,now,p.index-1,WINDOW),
+    db.prepare(`UPDATE relay_jobs SET stream_tail=? WHERE id=? AND provider=? AND stream_tail=?
+      AND EXISTS(SELECT 1 FROM relay_chunks WHERE job_id=? AND direction=2 AND part=? AND data=?)`)
+      .bind(p.index,p.jobId,p.provider,p.index-1,p.jobId,p.index,encoded)
+  ]);
+  if(!changed.meta.changes) {
+    const row=await db.prepare('SELECT stream_tail,stream_ack,phase FROM relay_jobs WHERE id=? AND provider=? AND expires_ms>?')
+      .bind(p.jobId,p.provider,now).first();
+    demand(row,404,'Unknown job');
+    if (row.stream_ack<p.index) {
+      const existing=await db.prepare('SELECT data FROM relay_chunks WHERE job_id=? AND direction=2 AND part=?').bind(p.jobId,p.index).first();
+      if (!existing && row.stream_tail===p.index-1 && row.stream_tail-row.stream_ack>=WINDOW) demand(false,429,'Reader has not acknowledged earlier frames');
+      demand(existing && JSON.parse(existing.data).payload.boxHash===p.boxHash,409,'Unexpected stream sequence');
+    }
+  }
+  return response({index:p.index});
+}
+
+async function readFrames(db,id,after,row) {
+  demand(after>=row.stream_ack && after<=row.stream_tail,409,'Invalid or expired stream cursor');
+  if(after>row.stream_ack) {
+    await db.batch([
+      db.prepare('UPDATE relay_jobs SET stream_ack=max(stream_ack,?) WHERE id=? AND stream_tail>=?').bind(after,id,after),
+      db.prepare('DELETE FROM relay_chunks WHERE job_id=? AND direction=2 AND part<=?').bind(id,after)
+    ]);
+  }
+  const page=await db.prepare('SELECT data FROM relay_chunks WHERE job_id=? AND direction=2 AND part>? AND part<=? ORDER BY part LIMIT 8')
+    .bind(id,after,row.stream_tail).all();
+  return page.results.map(r=>JSON.parse(r.data));
+}
+
 export async function relayRoute(request,db,state,{now=Date.now()}={}) {
   const op=new URL(request.url).pathname.slice('/v1/relay/'.length);
   try {
@@ -204,16 +257,22 @@ export async function relayRoute(request,db,state,{now=Date.now()}={}) {
       return response({chainId:state.chainId,providers:listed.results.filter(r=>allowed.has(r.provider)).map(r=>JSON.parse(r.advert))});
     }
     demand(request.method==='POST' && Object.hasOwn(extra,op),404,'Relay route not found');
-    const b=await input(request,['submit','complete'].includes(op)?BOX_LIMIT+16384:8192);
+    const b=await input(request,['submit','complete'].includes(op)?BOX_LIMIT+16384:op==='frame'?FRAME_LIMIT+4096:8192);
     const p=authenticate(op,b,state,now);
     if(op==='presence') return await presence(db,b,p,now);
     if(op==='submit') {await purgeExpiredRelay(db,now);return await submit(db,b,p,state,now);}
     if(op==='poll') return await poll(db,p,now);
+    if(op==='frame') return await appendFrame(db,b,p,now);
     if(op==='complete') return await complete(db,b,p,now);
-    const row=await db.prepare('SELECT phase,result_hash,bytes,reply_meta FROM relay_jobs WHERE id=? AND payer=? AND expires_ms>?')
+    const row=await db.prepare('SELECT phase,result_hash,bytes,reply_meta,stream_ack,stream_tail FROM relay_jobs WHERE id=? AND payer=? AND expires_ms>?')
       .bind(p.jobId,p.payer,now).first();
     demand(row,404,'Job unavailable');
     const result={jobId:p.jobId,status:row.phase};
+    if(p.after!==undefined) {
+      result.frames=await readFrames(db,p.jobId,p.after,row);
+      result.tail=row.stream_tail;
+      if(p.after+result.frames.length<row.stream_tail) return response({...result,status:'running'});
+    }
     if(row.phase==='done'){
       result.reply=JSON.parse(row.reply_meta);
       result.reply.box=await loadBox(db,p.jobId,1,row.bytes,row.result_hash);

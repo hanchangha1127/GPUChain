@@ -14,6 +14,42 @@ Run `npm run status` to see the local node's verified height and voting status. 
 
 The wallet opens in English and offers Korean, Japanese, Simplified Chinese and French. On Windows, open **GPUChain Backup.cmd** to save an encrypted copy of the local signing key. Restore requires that file and its password. A voting node also needs its original, current database to retain its certified voting identity. [Backup and recovery](docs/wallet-backup.md)
 
+## Use paid inference from another computer
+
+On the **requesting computer**, install Node.js 24 or later and OpenCode 2.x, enter the GPUChain checkout, then run:
+
+~~~powershell
+npm run opencode:setup
+~~~
+
+Reopen OpenCode and select `gpuchain/qwen3.8-flash-next` in `/models`. The installer starts or reuses the participant and registers its loopback OpenAI-compatible base URL, normally `http://127.0.0.1:8792/v1`. OpenCode reads its inference token from a private local file. The token authorizes paid inference from the participant wallet. Keep it on that computer. The current default model stays selected until you choose GPUChain. The setup targets the OpenCode 2.x provider schema. If your config uses JSONC comments, generate the provider entry with `npm run opencode:setup -- --config NEW_FILE.json` and copy `providers.gpuchain` into your settings. [OpenCode configuration](https://opencode.ai/docs/config/)
+
+Fund this participant's public address and use another registered provider. The gateway streams text, reasoning and tool calls while the engine generates them and delivers the final usage after settlement. Later turns prefer the same eligible provider, including after a gateway restart, so the engine can reuse a matching prefix. A cold or evicted cache or a provider change can give zero hits. The discount applies to the provider's measured `usage.prompt_tokens_details.cached_tokens`. Only keyed hashes and provider addresses with timestamps are kept for routing (up to 256 entries, 24 hours).
+
+**Choose reasoning effort.** In the OpenCode 2.4.1 terminal UI, select GPUChain in `/models`, then press **Ctrl+T** (Cycle model variants) to choose `none`, `low`, `medium` or `high`. For one CLI run:
+
+~~~powershell
+opencode run --model "gpuchain/qwen3.8-flash-next#high" "Review this change."
+~~~
+
+The selected variant sends its `reasoning_effort` with the request. For a custom thinking budget, add a model variant such as `{"id":"high-512","body":{"reasoning_effort":"high","reasoning_budget_tokens":512}}` to the GPUChain model's `variants` and select `#high-512`. An API client can send the same two fields in its chat request. Budgets range from zero through `max_tokens`. Zero removes the explicit thinking-token cap. Use an omitted or zero budget with `none` to disable thinking. Reasoning and answer tokens share the output limit, which defaults to 4,096 in the OpenCode setup. [OpenCode model variants](https://opencode.ai/docs/models/#variants)
+
+The gateway discovers compatible providers using the public ledger. An eligible direct HTTPS endpoint or the encrypted outbound relay carries the inference. OpenCode connects to the **buyer's** loopback. The Sites origin serves the ledger and relay, and port 8080 belongs to the supplier's local engine.
+
+For an explicit relay check from the buyer's PowerShell, confirm the displayed address is the funded wallet you intend to spend from. The final command makes a paid request. Omit `--ledger $ledger` from the commands to use automatic discovery, including after the bootstrap site retires.
+
+~~~powershell
+$dataDir = if ($env:GPUCHAIN_PARTICIPANT_DIR) { $env:GPUCHAIN_PARTICIPANT_DIR } else { Join-Path $env:USERPROFILE '.gpuchain/participant' }
+$buyer = Get-Content -Raw -LiteralPath (Join-Path $dataDir 'participant.json') | ConvertFrom-Json
+$status = node scripts/participant.mjs status | ConvertFrom-Json
+if ($buyer.address -ne $status.address) { throw 'Check the participant wallet and directory' }
+$buyer.address
+$ledger = 'https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site'
+node src/cli.mjs balance --ledger $ledger --address $buyer.address
+node src/cli.mjs routes --ledger $ledger --transport relay --wallet $buyer.walletFile
+node src/cli.mjs chat --ledger $ledger --transport relay --wallet $buyer.walletFile --text "Reply with OK." --max-input 1024 --max-output 32
+~~~
+
 ## Verification and voting
 
 Every default node verifies checkpoints. To enter the voting committee, it also needs an authorized wallet and its own reachable HTTPS origin. The operator can authorize the node's public address with `add-validator`; existing registered provider wallets are also eligible. Configure `GPUCHAIN_VALIDATOR_ORIGIN` to point at its listener (loopback port 8790 by default), then restart the node. Keep its wallet and database together in the persistent participant directory (`~/.gpuchain/participant` by default).

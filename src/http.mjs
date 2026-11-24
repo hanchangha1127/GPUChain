@@ -9,7 +9,7 @@ function transportFor(url) {
 }
 
 // Large local-model completions may run for more than five minutes before sending headers.
-export async function requestJson(value, {method, headers, body, timeoutMs = 30_000, maxBytes = 8 * 1024 * 1024, signal} = {}) {
+export async function requestJsonResponse(value, {method, headers, body, timeoutMs = 30_000, maxBytes = 8 * 1024 * 1024, signal} = {}) {
   const url = new URL(value);
   const transport = transportFor(url);
   const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
@@ -28,6 +28,17 @@ export async function requestJson(value, {method, headers, body, timeoutMs = 30_
     req.on('error',reject);
     req.end(data);
   });
+  if (res.statusCode >= 200 && res.statusCode < 300) return res;
+  const raw = await responseText(res,Math.min(maxBytes,65536));
+  let reason = res.statusMessage;
+  try {
+    const error = JSON.parse(raw)?.error;
+    if (typeof error === 'string') reason = error;
+  } catch { /* Error bodies can be plain text. */ }
+  throw Object.assign(Error(`HTTP ${res.statusCode}: ${reason}`),{status:res.statusCode});
+}
+
+async function responseText(res,maxBytes) {
   const chunks = [];
   let length = 0;
   for await (const chunk of res) {
@@ -35,14 +46,10 @@ export async function requestJson(value, {method, headers, body, timeoutMs = 30_
     if (length > maxBytes) throw Error('Response exceeds size limit');
     chunks.push(chunk);
   }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  if (res.statusCode < 200 || res.statusCode >= 300) {
-    let reason = res.statusMessage;
-    try {
-      const error = JSON.parse(raw)?.error;
-      if (typeof error === 'string') reason = error;
-    } catch { /* Error bodies can be plain text. */ }
-    throw Object.assign(Error(`HTTP ${res.statusCode}: ${reason}`),{status:res.statusCode});
-  }
-  return JSON.parse(raw);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+export async function requestJson(value, options = {}) {
+  const res=await requestJsonResponse(value,options);
+  return JSON.parse(await responseText(res,options.maxBytes ?? 8*1024*1024));
 }

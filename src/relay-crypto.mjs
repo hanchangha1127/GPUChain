@@ -20,8 +20,10 @@ function aad(fields,direction) {
   for (const value of [chainId,payer,provider,jobId,requestHash,providerKey,clientKey]) {
     if (typeof value !== 'string' || !HEX.test(value)) throw Error('Invalid relay encryption context');
   }
-  if (direction !== 'request' && direction !== 'response') throw Error('Invalid relay direction');
-  return Buffer.from(canonical({domain:DOMAIN,chainId,payer,provider,jobId,requestHash,providerKey,clientKey,direction}));
+  const context={domain:DOMAIN,chainId,payer,provider,jobId,requestHash,providerKey,clientKey,direction};
+  if (direction === 'frame' && Number.isSafeInteger(fields.index) && fields.index>0) context.index=fields.index;
+  else if (direction !== 'request' && direction !== 'response') throw Error('Invalid relay direction');
+  return Buffer.from(canonical(context));
 }
 
 function jobCipherKey(privateKey,peer,associated) {

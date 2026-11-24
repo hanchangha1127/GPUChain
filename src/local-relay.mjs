@@ -10,9 +10,14 @@ export function openRelayDatabase(path) {
   try {
     sql.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON; PRAGMA auto_vacuum=FULL;');
     sql.exec('BEGIN IMMEDIATE');
-    if (!sql.prepare('PRAGMA user_version').get().user_version) {
+    const version=sql.prepare('PRAGMA user_version').get().user_version;
+    if (version<1) {
       sql.exec(readFileSync(new URL('../hosting/sites/drizzle/0004_relay_mailbox.sql',import.meta.url),'utf8'));
       sql.exec('PRAGMA user_version=1');
+    }
+    if (version<2) {
+      sql.exec(readFileSync(new URL('../hosting/sites/drizzle/0005_relay_stream.sql', import.meta.url),'utf8'));
+      sql.exec('PRAGMA user_version=2');
     }
     sql.exec('COMMIT');
     function prepare(query,args=[]) {

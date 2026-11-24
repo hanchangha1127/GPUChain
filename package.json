@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node scripts/participant.mjs start",
     "gui": "node scripts/open-wallet.mjs",
+    "opencode:setup": "node scripts/setup-opencode.mjs",
     "wallet:unlock": "node scripts/participant.mjs unlock",
     "wallet:backup": "node scripts/wallet-backup.mjs",
     "status": "node scripts/participant.mjs status",

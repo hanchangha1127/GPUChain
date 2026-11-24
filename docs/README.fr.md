@@ -12,6 +12,12 @@ Utilisez `npm run status` pour consulter la hauteur vérifiée et le statut de v
 
 Le portefeuille s’ouvre en anglais et propose cinq langues, dont le français. Utilisez `GPUChain Backup.cmd` pour créer une sauvegarde chiffrée et conservez le mot de passe de restauration séparément. La boutique publique vend 10 coins pour 1 USDT. Enregistrez l’adresse de réception GPUChain avant le paiement. [Guide d’achat](usdt-sales.md) · [Sauvegarde et restauration](wallet-backup.md)
 
+## Utiliser OpenCode depuis un autre ordinateur
+
+Sur l’ordinateur qui demande l’inférence, installez Node.js 24 ou ultérieur et OpenCode 2.x, puis exécutez `npm run opencode:setup` dans le dépôt GPUChain. Rouvrez OpenCode et sélectionnez `gpuchain/qwen3.8-flash-next` avec `/models`. L’adresse de base est généralement `http://127.0.0.1:8792/v1` sur cet ordinateur. Conservez le fichier `opencode.token` sur place. Il autorise les requêtes payantes depuis le portefeuille du participant.
+
+Alimentez ce portefeuille et choisissez un fournisseur distinct. Le texte, le raisonnement et les appels d’outils arrivent en continu. La passerelle privilégie le fournisseur utilisé au tour précédent pour réutiliser le cache KV. La remise dépend du nombre de jetons en cache mesuré et confirmé dans le reçu. Le registre public permet de découvrir les fournisseurs et d’acheminer les requêtes via le relais chiffré. Le port 8080 est réservé au moteur local du fournisseur. [Exemple de vérification du relais](../README.md#use-paid-inference-from-another-computer)
+
 ## Vérification du registre et vote
 
 Chaque nœud vérifie les points de contrôle. Pour voter sur les transactions, il lui faut également un portefeuille autorisé et une origine HTTPS publique accessible. L’exploitant peut autoriser l’adresse publique du portefeuille avec `add-validator`. Les portefeuilles déjà inscrits comme fournisseurs sont aussi admissibles. Faites suivre le trafic HTTPS vers le port local (8790 par défaut), définissez `GPUCHAIN_VALIDATOR_ORIGIN`, puis redémarrez le nœud. Conservez ensemble le portefeuille et sa base dans leur répertoire de données d’origine, par défaut `~/.gpuchain/participant`.

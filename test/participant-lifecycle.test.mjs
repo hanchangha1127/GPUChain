@@ -30,7 +30,9 @@ async function setup(t) {
       });
       s.listen(0,'127.0.0.1');
       await once(s,'listening');
+      let openAiUrl=null;
       return {url:'http://127.0.0.1:'+s.address().port,issueUnlock:()=>({code:'0123456789',expiresAt:Date.now()+120000}),
+        get openAiUrl(){ return openAiUrl; },enableOpenAi:async()=>openAiUrl='http://127.0.0.1:8792/v1',
         close:()=>new Promise(r=>s.close(r))};
     }
   `);
@@ -62,6 +64,11 @@ test('background command outlives the launcher, serializes concurrent starts and
   assert.equal(denied.status,403);
   const deniedUnlock = await fetch('http://127.0.0.1:'+privateDescriptor.port+'/unlock',{method:'POST'});
   assert.equal(deniedUnlock.status,403);
+  assert.equal((await fetch('http://127.0.0.1:'+privateDescriptor.port+'/opencode',{method:'POST'})).status,403);
+  assert.equal(status.openAiUrl,null);
+  const gateway=await run('opencode');
+  assert.equal(gateway.openAiUrl,'http://127.0.0.1:8792/v1');
+  assert.equal((await run('status')).openAiUrl,gateway.openAiUrl);
   const pairing=await run('unlock');
   assert.match(pairing.code,/^[0-9]{10}$/);
   assert.ok(!JSON.stringify(await run('status')).includes(pairing.code));

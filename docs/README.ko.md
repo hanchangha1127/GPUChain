@@ -14,6 +14,40 @@ GPUChain 공개 메인넷 `gpuchain-mainnet-1`은 소규모로 운영하는 추�
 
 지갑의 기본 언어는 영어이며 한국어·일본어·중국어 간체·프랑스어로 전환할 수 있습니다. `GPUChain Backup.cmd`에서 암호화 백업을 만든 뒤 파일과 비밀번호를 분리해 보관하세요. 합의에 투표하는 노드는 기존의 최신 DB도 함께 보존해야 합니다. [백업·복구](wallet-backup.md)
 
+## 다른 PC의 OpenCode에서 추론 요청하기
+
+**추론을 사용할 PC**에 Node.js 24 이상과 OpenCode 2.x를 설치한 뒤 GPUChain 저장소에서 다음 명령을 실행하세요.
+
+~~~powershell
+npm run opencode:setup
+~~~
+
+OpenCode를 다시 열고 `/models`에서 `gpuchain/qwen3.8-flash-next`를 선택하세요. 설치 명령은 기존 기본 모델을 보존하고 GPUChain 공급자를 추가합니다. OpenCode의 기본 접속 주소는 **요청자 PC의** `http://127.0.0.1:8792/v1`입니다. 실제 주소는 설치 결과의 `baseURL` 또는 노드 상태의 `openAiUrl`에서 확인할 수 있습니다. 로컬 `opencode.token`은 해당 PC의 참여 지갑에서 유료 추론을 요청할 권한이 있으므로 그 PC에만 보관하세요.
+
+요청자 지갑에 사용 가능한 잔액이 있고 다른 지갑으로 등록한 공급자가 온라인이어야 합니다. 게이트웨이는 공급자에게 직접 HTTPS로 요청하거나 공개 원장의 암호화 릴레이를 사용합니다. Sites 주소는 원장·릴레이용이며 8080은 공급자 PC에서 엔진에 연결하는 포트입니다. OpenCode에서는 텍스트, 추론 과정, 도구 호출을 스트리밍으로 받고 정산 후 최종 사용량을 받습니다. 후속 요청은 같은 공급자를 우선 선택해 프롬프트 접두부의 KV 캐시를 재사용할 수 있습니다. 공급자가 바뀌거나 엔진 캐시가 사라지면 적중량은 0일 수 있습니다. 캐시 할인은 영수증의 실측 `usage.prompt_tokens_details.cached_tokens`에만 적용됩니다.
+
+**추론 단계 선택**은 요청자 쪽에서 할 수 있습니다. OpenCode 2.4.1 터미널 화면의 `/models`에서 GPUChain을 선택한 뒤 **Ctrl+T**를 눌러 `none`(끄기), `low`, `medium`, `high` 중 하나를 선택하세요. 한 번만 높은 단계로 실행하려면 다음 명령을 사용하세요.
+
+~~~powershell
+opencode run --model "gpuchain/qwen3.8-flash-next#high" "이 변경 사항을 검토해 줘."
+~~~
+
+선택한 값은 요청의 `reasoning_effort`로 전달됩니다. 생각에 사용할 토큰 수를 제한하려면 GPUChain 모델의 `variants`에 `{"id":"high-512","body":{"reasoning_effort":"high","reasoning_budget_tokens":512}}`를 추가하고 `#high-512`로 선택하세요. API를 직접 사용할 때도 같은 두 필드를 요청에 넣을 수 있습니다. 생각 토큰과 답변 토큰은 하나의 출력 한도를 공유하며 OpenCode의 기본 출력 한도는 4,096입니다. 생각 예산의 범위는 0부터 요청의 `max_tokens`까지입니다. 0은 별도의 생각 토큰 상한을 해제하며, `none`으로 생각을 끌 때는 예산을 생략하거나 0으로 설정하세요. [OpenCode 모델 변형 안내](https://opencode.ai/docs/models/#variants)
+
+**공개 릴레이를 직접 지정해 확인하려면** 요청자 PC의 PowerShell에서 아래 명령을 사용하세요. 출력된 공개 주소가 코인을 충전한 지갑인지 확인한 뒤 마지막 유료 추론 명령을 실행하세요. 아래 명령에서 `--ledger $ledger`를 생략하면 현재 공개 원장을 자동으로 탐색합니다.
+
+~~~powershell
+$dataDir = if ($env:GPUCHAIN_PARTICIPANT_DIR) { $env:GPUCHAIN_PARTICIPANT_DIR } else { Join-Path $env:USERPROFILE '.gpuchain/participant' }
+$buyer = Get-Content -Raw -LiteralPath (Join-Path $dataDir 'participant.json') | ConvertFrom-Json
+$status = node scripts/participant.mjs status | ConvertFrom-Json
+if ($buyer.address -ne $status.address) { throw 'Check the participant wallet and directory' }
+$buyer.address
+$ledger = 'https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site'
+node src/cli.mjs balance --ledger $ledger --address $buyer.address
+node src/cli.mjs routes --ledger $ledger --transport relay --wallet $buyer.walletFile
+node src/cli.mjs chat --ledger $ledger --transport relay --wallet $buyer.walletFile --text "Reply with OK." --max-input 1024 --max-output 32
+~~~
+
 ## 원장 검증과 합의 투표
 
 기본 노드는 원장을 검증합니다. 거래 확정에 투표하려면 승인된 지갑과 외부에서 접속 가능한 HTTPS 주소도 필요합니다. 운영자는 노드의 공개 지갑 주소를 `add-validator`로 승인할 수 있고, 이미 등록된 추론 공급자 지갑도 참여 자격이 있습니다. HTTPS 주소를 로컬 리스너(기본 8790번 포트)에 연결하고 `GPUCHAIN_VALIDATOR_ORIGIN`을 지정한 뒤 노드를 재시작하세요. 지갑과 DB는 같은 데이터 디렉터리(기본 `~/.gpuchain/participant`)에 보관합니다.

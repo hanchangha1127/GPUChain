@@ -12,6 +12,12 @@ GPUChain 公开主网 `gpuchain-mainnet-1` 目前以小规模试点方式运行�
 
 界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。公开商店的售价为 1 USDT 购买 10 枚代币。付款前先登记 GPUChain 收款地址。[购买说明](usdt-sales.md) · [备份与恢复](wallet-backup.md)
 
+## 从另一台电脑的 OpenCode 请求推理
+
+在**使用推理的电脑**上安装 Node.js 24 或更高版本和 OpenCode 2.x，然后在 GPUChain 仓库中运行 `npm run opencode:setup`。重新打开 OpenCode，在 `/models` 中选择 `gpuchain/qwen3.8-flash-next`。默认连接地址为请求方本机的 `http://127.0.0.1:8792/v1`。请在本机保管 `opencode.token`，持有者可以用参与节点的钱包支付推理请求。
+
+给请求方钱包充值后，即可使用其他已注册供应者的算力。文本、推理过程和工具调用会在生成时流式返回。后续对话优先使用同一供应者，以便复用相同前缀的 KV 缓存。缓存折扣按结算收据中实测的缓存读取量计算。公共账本地址用于发现供应者和连接加密中继。8080 是供应者电脑上的引擎端口。[中继连接验证示例](../README.md#use-paid-inference-from-another-computer)
+
 ## 账本验证与共识投票
 
 默认节点持续验证账本。要参与交易确认，还需要获准的钱包和可从公网访问的 HTTPS 地址。运营者可以用 `add-validator` 授权节点的钱包公钥地址，已注册的推理提供者钱包也有资格。将 HTTPS 地址转发到本机监听端口（默认为 8790），设置 `GPUCHAIN_VALIDATOR_ORIGIN` 后重启节点。请一起保存钱包和原始数据库，默认数据目录为 `~/.gpuchain/participant`。

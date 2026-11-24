@@ -86,7 +86,8 @@ async function daemon() {
     if (!s.chainId || !s.address || !s.instanceId) throw Error('Local validator identity unavailable');
     // Return local status only. The complete provider registry may be large.
     const {providers,...summary} = s;
-    return {...summary,running:true,url:node.url,guiUrl:node.guiUrl,pid:process.pid};
+    return {...summary,running:true,url:node.url,guiUrl:node.guiUrl,openAiUrl:node.openAiUrl,
+      openAiError:node.openAiError,pid:process.pid};
   }
 
   const server = createServer(async (req,res) => {
@@ -94,7 +95,7 @@ async function daemon() {
     const nonce = req.headers['x-gpuchain-nonce'];
     const issued=req.headers['x-gpuchain-time'];
     const proof=op==='unlock' ? ['request',op,nonce,issued] : ['request',op,nonce];
-    if (req.method !== 'POST' || !['status','stop','unlock'].includes(op) || typeof nonce !== 'string' ||
+    if (req.method !== 'POST' || !['status','stop','unlock','opencode'].includes(op) || typeof nonce !== 'string' ||
         !/^[a-f0-9]{32}$/.test(nonce) || !equalMac(req.headers['x-gpuchain-auth'],mac(key,proof))) {
       res.writeHead(403); res.end(); return;
     }
@@ -111,6 +112,13 @@ async function daemon() {
         unlockNonces.set(nonce,now+21_000);
         if (!node || closing || !node.issueUnlock) { res.writeHead(503);res.end('Wallet unavailable');return; }
         result={...node.issueUnlock(),guiUrl:node.guiUrl};
+      } else if (op==='opencode') {
+        if (!node || closing || req.headers.origin || req.headers.forwarded ||
+            Object.keys(req.headers).some(k=>k.startsWith('x-forwarded-'))) {
+          res.writeHead(403); res.end(); return;
+        }
+        try { result={openAiUrl:await node.enableOpenAi()}; }
+        catch { result={openAiUrl:null,error:node.openAiError ?? 'Missing local inference token'}; }
       } else result = op === 'stop' ? await stop() : await state();
       res.writeHead(200,{'content-type':'application/json','cache-control':'no-store','connection':'close'});
       res.end(JSON.stringify({state:result,auth:mac(key,['response',op,nonce,result])}));
@@ -179,6 +187,12 @@ async function launch() {
 }
 
 async function manage(op) {
+  if (op==='opencode') {
+    if (!active()) throw Error('Start the participant to enable its local inference gateway');
+    const state=await control(op);
+    if (!state.openAiUrl) throw Error(state.error ?? 'Local inference unavailable');
+    return state;
+  }
   if (op==='unlock') {
     if (!active()) throw Error('Start the managed GPUChain wallet before unlocking');
     return control('unlock');
@@ -208,11 +222,11 @@ async function manage(op) {
 
 try {
   const args = process.argv.slice(2);
-  if (args.length > 1) throw Error('Usage: node scripts/participant.mjs start|status|stop|unlock');
+  if (args.length > 1) throw Error('Usage: node scripts/participant.mjs start|status|stop|unlock|opencode');
   const command = args[0] ?? 'start';
   if (command === '--daemon' && process.send) await daemon();
-  else if (['start','status','stop','unlock'].includes(command)) console.log(JSON.stringify(await manage(command)));
-  else throw Error('Usage: node scripts/participant.mjs start|status|stop|unlock');
+  else if (['start','status','stop','unlock','opencode'].includes(command)) console.log(JSON.stringify(await manage(command)));
+  else throw Error('Usage: node scripts/participant.mjs start|status|stop|unlock|opencode');
 } catch (err) {
   console.error(err.message);
   process.exitCode = 1;

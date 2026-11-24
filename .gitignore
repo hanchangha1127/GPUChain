@@ -5,6 +5,8 @@
 *.wallet.json.*.tmp
 *.keystore.json
 *.keystore.json.*.tmp
+opencode.token
+opencode.token.*.tmp
 .env
 .env.*
 node_modules/

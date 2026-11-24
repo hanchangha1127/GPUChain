@@ -1,9 +1,12 @@
 import http from 'node:http';
+import { once } from 'node:events';
 import { hash, sign, verify } from './crypto.mjs';
 import { charge, CONTEXT, MODEL } from './ledger.mjs';
 import { decodeAmount } from './amount.mjs';
 import { readVerifiedState } from './node.mjs';
-import { requestJson } from './http.mjs';
+import { requestJson, requestJsonResponse } from './http.mjs';
+import { normalizeChatOptions, normalizeChatMessages, richCountBody, validateChatReply, chatResponseHash } from './chat-protocol.mjs';
+import { readStrataCompletion } from './strata-stream.mjs';
 import { PROBE_DOMAIN } from './routing.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 import { REASONING_EFFORTS, validateReasoningOptions, backendReasoning } from './reasoning.mjs';
@@ -127,8 +130,8 @@ async function readBody(stream) {
   }
 }
 
-function checkRequest({ request, signature, messages }, chainId, provider) {
-  const fields = [...REQUEST_FIELDS,...['reasoningEffort','reasoningBudgetTokens'].filter(k=>request && Object.hasOwn(request,k))].sort();
+function checkRequest({ request, signature, messages, chatOptions }, chainId, provider) {
+  const fields = [...REQUEST_FIELDS,...['reasoningEffort','reasoningBudgetTokens','chatOptionsHash'].filter(k=>request && Object.hasOwn(request,k))].sort();
   requireValue(request && typeof request === 'object' &&
     Object.keys(request).sort().join('|') === fields.join('|'), 400, 'Invalid request fields');
   try { validateReasoningOptions(request); } catch (err) { throw new ProviderError(400,err.message); }
@@ -145,6 +148,12 @@ function checkRequest({ request, signature, messages }, chainId, provider) {
     400, 'Invalid nonce or token budget');
   requireValue(typeof signature === 'string' && verify(request.payer, request, signature), 403,
     'Invalid request signature');
+  if (request.chatOptionsHash !== undefined || chatOptions !== undefined) {
+    requireValue(typeof request.chatOptionsHash === 'string' && chatOptions && request.chatOptionsHash === hash(chatOptions) &&
+      Array.isArray(messages) && request.messagesHash === hash(messages), 400,'Invalid signed chat options or messages');
+    try { return {messages:normalizeChatMessages(messages),chatOptions:normalizeChatOptions(chatOptions)}; }
+    catch (err) { throw new ProviderError(400,err.message); }
+  }
   requireValue(Array.isArray(messages) && messages.length > 0 && messages.length <= 4096, 400,
     'Expected a nonempty text conversation');
   for (const [index, item] of messages.entries()) {
@@ -154,6 +163,7 @@ function checkRequest({ request, signature, messages }, chainId, provider) {
   }
   requireValue(messages.some(item => item.role === 'user') && request.messagesHash === hash(messages),
     400, 'Missing user message or mismatched messages hash');
+  return {messages};
 }
 
 export function createStrataBackend({strataUrl = 'http://127.0.0.1:8000/v1', engine = 'ryzenstrata', modelId, apiKey} = {}) {
@@ -187,7 +197,18 @@ export function createStrataBackend({strataUrl = 'http://127.0.0.1:8000/v1', eng
     const model=selectModel(catalog,engine,requested);
     return {...model,...runtimePrecision(metrics,model),engine};
   }
-  return {profile,backend};
+  async function stream(body,deadline,signal,onDelta) {
+    let response;
+    try {
+      response=await requestJsonResponse(base+'/chat/completions', {body,signal,timeoutMs:deadline,maxBytes:MAX_BYTES,
+        headers:{accept:'text/event-stream',...(apiKey ? {authorization:'Bearer '+apiKey} : {})}});
+      return await readStrataCompletion(response,body.model,onDelta);
+    } catch (err) {
+      if (signal.aborted) throw signal.reason;
+      throw new ProviderError(502, err.status ? 'Strata returned HTTP '+err.status : 'Invalid or interrupted Strata event stream');
+    } finally { response?.destroy(); }
+  }
+  return {profile,backend,stream};
 }
 
 export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, engine, modelId, apiKey,
@@ -225,14 +246,15 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
     requireValue(!busy, 429, 'Provider is handling another request');
     const payload = {
       domain:PROBE_DOMAIN, chainId, provider:wallet.address, challenge, available:true,
-      model:MODEL, contextWindow:CONTEXT, kvCache, reasoningOptions:1, maxOutputTokens:Math.min(CONTEXT, outputLimit ?? CONTEXT)
+      model:MODEL, contextWindow:CONTEXT, kvCache, reasoningOptions:1, chatProtocol:1, maxOutputTokens:Math.min(CONTEXT, outputLimit ?? CONTEXT)
     };
     return {payload, signature:sign(wallet.privateKey, payload)};
   }
 
-  async function infer(body) {
-    const { request, messages } = body;
-    checkRequest(body, chainId, wallet.address);
+  async function infer(body,signal,onDelta,startEvents) {
+    const { request } = body;
+    const { messages,chatOptions } = checkRequest(body, chainId, wallet.address);
+    requireValue(Boolean(onDelta) === (chatOptions?.stream === true),400,'Streaming requires signed stream=true and Accept: text/event-stream');
     let state;
     try { state = await readState(ledgerUrl, chainId); }
     catch { throw new ProviderError(503, 'Could not verify pinned ledger'); }
@@ -251,12 +273,18 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
     if (previous && previous.expiresAt <= now) previous = undefined;
     if (previous?.hash === requestHash) {
       requireValue(previous.stage===stage,409,'Network stage changed since the previous receipt');
-      return previous.result;
+      const result=previous.result;
+      if (onDelta) {
+        const {tool_calls,...delta}=result.message;
+        if (tool_calls) delta.tool_calls=tool_calls.map((call,index)=>({index,...call}));
+        await onDelta(delta);
+      }
+      return result;
     }
     requireValue(!seen.has(key), 409, 'Request nonce has already been used at this provider');
     requireValue(seen.size < 4096, 503, 'Provider replay window is full');
     // Pin the complete request, including final metering checks, to the same backend.
-    const {profile,backend}=selected();
+    const {profile,backend,stream}=selected();
     const loaded=await profile();
     const { capacity, outputLimit, modelId, kvCache } = loaded;
     requireValue(!isCount(outputLimit, 1) || request.maxOutputTokens <= outputLimit,
@@ -264,9 +292,9 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
     if (request.maxInputTokens < capacity - request.maxOutputTokens) {
       // Both Strata engines expose their active tokenizer and template through this endpoint.
       const system = messages[0].role === 'system' ? messages[0].content : undefined;
-      const estimate = await backend('/messages/count_tokens', {
-        model: modelId, messages: system === undefined ? messages : messages.slice(1), system, ...backendReasoning(request,true)
-      });
+      const countBody = chatOptions ? richCountBody(messages,chatOptions) :
+        {messages:system === undefined ? messages : messages.slice(1), system};
+      const estimate = await backend('/messages/count_tokens', {model:modelId,...countBody,...backendReasoning(request,true)});
       requireValue(isCount(estimate?.input_tokens, 1), 502, 'Strata did not return a prompt count');
       requireValue(estimate.input_tokens <= request.maxInputTokens, 400, 'Prompt exceeds signed input budget');
     }
@@ -274,19 +302,32 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
     activeProfile = loaded;
     let answer;
     try {
-      answer = await backend('/chat/completions', {model:modelId,messages,
-        max_tokens:request.maxOutputTokens,stream:false,...backendReasoning(request)},timeoutMs);
+      signal.throwIfAborted();
+      const nativeBody = {model:modelId,messages,max_tokens:request.maxOutputTokens,stream:false,
+        ...chatOptions,...backendReasoning(request)};
+      if (onDelta) {
+        requireValue(typeof stream === 'function',503,'Selected backend does not support streaming');
+        startEvents();
+        nativeBody.stream_options={include_usage:true};
+        answer = await stream(nativeBody,timeoutMs,signal,onDelta);
+      } else answer = await backend('/chat/completions',nativeBody,timeoutMs);
     } finally {
       activeProfile = undefined;
     }
     const choice = answer?.choices?.[0];
-    requireValue(answer?.model === modelId && choice?.message?.role === 'assistant' &&
-      ['stop', 'length'].includes(choice.finish_reason), 502, 'Incomplete or unexpected Strata completion');
-    const { content, reasoning_content: reasoning } = choice.message;
-    requireValue((typeof content === 'string' || (content === null && typeof reasoning === 'string')) &&
-      (reasoning == null || typeof reasoning === 'string'), 502, 'Invalid assistant content');
-    const message = { role: 'assistant', content };
-    if (typeof reasoning === 'string') message.reasoning_content = reasoning;
+    requireValue(answer?.model === modelId && choice?.message?.role === 'assistant',502,'Incomplete or unexpected Strata completion');
+    let message;
+    if (chatOptions) {
+      try { message=validateChatReply(choice.message,choice.finish_reason,chatOptions); }
+      catch { throw new ProviderError(502,'Invalid Strata assistant message or finish reason'); }
+    } else {
+      requireValue(['stop','length'].includes(choice.finish_reason),502,'Incomplete or unexpected Strata completion');
+      const { content, reasoning_content: reasoning } = choice.message;
+      requireValue((typeof content === 'string' || (content === null && typeof reasoning === 'string')) &&
+        (reasoning == null || typeof reasoning === 'string'), 502, 'Invalid assistant content');
+      message = {role:'assistant',content};
+      if (typeof reasoning === 'string') message.reasoning_content=reasoning;
+    }
     const usage = answer.usage;
     const inputTokens = usage?.prompt_tokens;
     const cachedTokens = usage?.prompt_tokens_details?.cached_tokens;
@@ -306,10 +347,12 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
     requireValue(current.chainId===chainId && current.networkStage===stage && current.providers.includes(wallet.address) &&
       request.nonce===(current.nonces[request.payer]??0)+1 && outputTokens<=current.maxOutputTokens,409,
     'Ledger rules or payer nonce changed during inference');
+    signal.throwIfAborted();
+    const finishReason=chatOptions ? choice.finish_reason : undefined;
     const payload = { type: 'inference', chainId, from: request.payer, provider: wallet.address,
-      nonce: request.nonce, model: MODEL, contextWindow: CONTEXT, requestHash, responseHash: hash(message),
+      nonce: request.nonce, model: MODEL, contextWindow: CONTEXT, requestHash, responseHash: chatResponseHash(message,finishReason),
       inputTokens, cachedTokens, outputTokens, ...(stage==='mainnet'?{kvCache}: {}) };
-    const result = { message, payload, providerSignature: sign(wallet.privateKey, payload) };
+    const result = { message, ...(chatOptions ? {finishReason} : {}), payload, providerSignature: sign(wallet.privateKey, payload) };
     seen.set(key, request.expiresAt);
     previous = { hash: requestHash, result, expiresAt: request.expiresAt, stage };
     clearTimeout(clearPrevious);
@@ -319,6 +362,24 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
   }
 
   const server = http.createServer(async (req, res) => {
+    const cancel = new AbortController();
+    res.once('close',()=>{ if (!res.writableFinished) cancel.abort(); });
+    let heartbeat;
+    function startEvents() {
+      cancel.signal.throwIfAborted();
+      if (!res.headersSent) {
+        res.writeHead(200,{'content-type':'text/event-stream; charset=utf-8','cache-control':'no-store','x-accel-buffering':'no'});
+        res.flushHeaders();
+        heartbeat = setInterval(()=>{ if (!res.destroyed && !res.writableNeedDrain) res.write(': keep-alive\n\n'); },15000);
+        heartbeat.unref();
+      }
+    }
+    async function sendEvent(event,data) {
+      startEvents();
+      if (!res.write('event: '+event+'\ndata: '+JSON.stringify(data)+'\n\n')) {
+        await once(res,'drain',{signal:cancel.signal});
+      }
+    }
     const send = (status, value) => {
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(JSON.stringify(value));
@@ -334,7 +395,7 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
         const current = activeProfile ?? await selected().profile();
         return send(200, { provider: wallet.address, chainId, model: MODEL, contextWindow: CONTEXT,
           engine:current.engine,backendModel:current.modelId, kvCache:current.kvCache,
-          reasoningEfforts:REASONING_EFFORTS, reasoningBudget:true, busy, inferenceActive:activeProfile!==undefined });
+          reasoningEfforts:REASONING_EFFORTS, reasoningBudget:true, chatProtocol:1, busy, inferenceActive:activeProfile!==undefined });
       }
       requireValue(req.method === 'POST' && req.url === '/v1/infer', 404, 'Route not found');
       requireValue((req.headers['content-type'] ?? '').split(';')[0].trim() === 'application/json',
@@ -344,13 +405,20 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
       requireValue(body && typeof body === 'object', 400, 'Expected JSON object');
       requireValue(!busy, 429, 'Provider is handling another request');
       busy = true;
-      try { send(200, await infer(body)); }
+      const streaming = (req.headers.accept ?? '').split(',').some(type=>type.split(';')[0].trim() === 'text/event-stream');
+      try {
+        const result = await infer(body,cancel.signal,streaming ? delta=>sendEvent('delta',delta) : undefined,startEvents);
+        if (streaming) { await sendEvent('receipt',result); res.end(); }
+        else send(200,result);
+      }
       finally { busy = false; }
     } catch (err) {
-      send(err instanceof ProviderError ? err.status : 500,
-        { error: err instanceof ProviderError ? err.message : 'Provider request failed',
-          ...(err instanceof ProviderError ? err.details : {}) });
-    }
+      if (res.destroyed || cancel.signal.aborted) return;
+      const error = {error:err instanceof ProviderError ? err.message : 'Provider request failed',
+        ...(err instanceof ProviderError ? err.details : {})};
+      if (res.headersSent) res.end('event: error\ndata: '+JSON.stringify(error)+'\n\n');
+      else send(err instanceof ProviderError ? err.status : 500,error);
+    } finally { clearInterval(heartbeat); }
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;

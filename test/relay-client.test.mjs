@@ -50,7 +50,8 @@ async function httpServer(t,handler) {
     try {
       const chunks=[];
       for await (const chunk of req) chunks.push(chunk);
-      const reply=await handler(req,Buffer.concat(chunks).toString());
+      const reply=await handler(req,Buffer.concat(chunks).toString(),res);
+      if (res.writableEnded) return;
       res.writeHead(reply.status,{'content-type':'application/json'});
       res.end(await reply.text());
     } catch (err) {res.writeHead(500);res.end(JSON.stringify({error:err.message}));}
@@ -64,6 +65,7 @@ async function httpServer(t,handler) {
 test('buyer and provider use real signed relay mailbox, chunk large prompts, and keep plaintext private', {timeout:12_000}, async t=>{
   const db=new DatabaseSync(':memory:');
   db.exec(await readFile(new URL('../hosting/sites/drizzle/0004_relay_mailbox.sql',import.meta.url),'utf8'));
+  db.exec(await readFile(new URL('../hosting/sites/drizzle/0005_relay_stream.sql',import.meta.url),'utf8'));
   const adapter=sqliteAdapter(db);
   const provider=generateWallet(),payer=generateWallet();
   const chainId=hash('relay network');
@@ -141,4 +143,96 @@ test('buyer and provider use real signed relay mailbox, chunk large prompts, and
     assert.equal(pump.status().state,'stopped');
     db.close();
   }
+});
+
+test('encrypted live relay sends deltas before receipt, retries identical frames, rejects truncation and tampering', {timeout:15_000},async t=>{
+  const db=new DatabaseSync(':memory:');
+  for (const name of ['0004_relay_mailbox','0005_relay_stream']) {
+    db.exec(await readFile(new URL('../hosting/sites/drizzle/'+name+'.sql',import.meta.url),'utf8'));
+  }
+  const adapter=sqliteAdapter(db);
+  const provider=generateWallet(), payer=generateWallet(), chainId=hash('live relay fixture');
+  const state={providers:[provider.address],chainId,nonces:{},balances:{[payer.address]:1_000_000_000},maxOutputTokens:1024};
+  const profile={provider:provider.address,model:MODEL,contextWindow:CONTEXT,kvCache:{k:'Q8',v:'Q8'},
+    maxOutputTokens:1024,reasoningOptions:1,chatProtocol:1};
+  const chatOptions={stream:true,tools:[{type:'function',function:{name:'edit_file',parameters:{type:'object'}}}]};
+  const messages=[{role:'user',content:'secret request marker'}];
+  const args=JSON.stringify({data:'🙂'.repeat(32000)});
+  const message={role:'assistant',content:null,reasoning_content:'secret thought marker',
+    tool_calls:[{id:'task',type:'function',function:{name:'edit_file',arguments:args}}]};
+  let mode='clean',retry,first,generated=0;
+  const relayUrl=await httpServer(t,async(req,raw)=>{
+    const routed=await relayRoute(new Request('https://relay.invalid'+req.url,
+      {method:req.method,headers:req.headers,body:raw||undefined}),adapter,state);
+    const reply=await routed.json();
+    assert.doesNotMatch(raw, /secret (request|thought) marker|edit_file|🙂/);
+    assert.doesNotMatch(JSON.stringify(reply), /secret (request|thought) marker|edit_file|🙂/);
+    if (req.url.endsWith('/frame') && mode==='clean' && JSON.parse(raw).payload.index===1) {
+      if (!first) {first=raw; return Response.json({error:'lost frame acknowledgement'},{status:503});}
+      retry=raw;
+    }
+    if (req.url.endsWith('/result') && reply.frames?.length && mode==='tamper') {
+      reply.frames[0].box+='x';
+    }
+    if (req.url.endsWith('/result') && mode==='truncate' && reply.frames) {
+      // Model an untrusted relay that hides all frames, then supplies the genuine signed completion.
+      reply.frames=[];
+      reply.tail=0;
+    }
+    return Response.json(reply,{status:routed.status});
+  });
+  const gate=Promise.withResolvers();
+  const localUrl=await httpServer(t,async(req,raw,res)=>{
+    if (req.url.startsWith('/v1/probe?')) {
+      const challenge=new URL(req.url,'http://local').searchParams.get('challenge');
+      const payload={domain:PROBE_DOMAIN,challenge,chainId,...profile,available:true};
+      return Response.json({payload,signature:sign(provider.privateKey,payload)});
+    }
+    generated++;
+    const input=JSON.parse(raw);
+    assert.equal(req.headers.accept,'text/event-stream');
+    assert.deepEqual(input.chatOptions,chatOptions);
+    const finishReason='tool_calls';
+    const payload={type:'inference',chainId,from:payer.address,provider:provider.address,nonce:input.request.nonce,
+      model:MODEL,contextWindow:CONTEXT,requestHash:hash(input.request),responseHash:hash({message,finishReason}),
+      inputTokens:18,cachedTokens:6,outputTokens:9,kvCache:profile.kvCache};
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    const send=(kind,value)=>res.write('event: '+kind+'\ndata: '+JSON.stringify(value)+'\n\n');
+    send('delta',{reasoning_content:message.reasoning_content});
+    if (mode==='clean') await gate.promise;
+    send('delta',{tool_calls:[{index:0,...message.tool_calls[0]}]});
+    send('receipt',{message,finishReason,payload,providerSignature:sign(provider.privateKey,payload)});
+    res.end();
+  });
+  const pump=startProviderRelay({wallet:provider,chainId,relayUrl,adapterUrl:localUrl,pollMs:15,presenceMs:1500});
+  try {
+    let offer;
+    for(let i=0;i<100 && !offer;i++){
+      [offer]=await listRelayOffers(relayUrl,chainId,{chatProtocol:true});
+      if(!offer)await delay(15);
+    }
+    assert.ok(offer);
+    const observed=[];
+    async function buy(nonce) {
+      state.nonces[payer.address]=nonce-1;
+      const request={type:'inference-request',chainId,provider:provider.address,payer:payer.address,nonce,
+        expiresAt:Date.now()+120000,messagesHash:hash(messages),chatOptionsHash:hash(chatOptions),maxInputTokens:100,maxOutputTokens:30};
+      return relayInfer({wallet:payer,chainId,provider:provider.address,relayUrl,offer:offer.offer,request,chatOptions,
+        signature:sign(payer.privateKey,request),messages,pollMs:12,resultTimeoutMs:2500,onDelta:delta=>{
+          observed.push(delta);
+          if(delta.reasoning_content) gate.resolve();
+        }});
+    }
+    assert.deepEqual((await buy(1)).message,message);
+    assert.equal(observed.length,2);
+    assert.equal(observed[1].tool_calls[0].function.arguments,args);
+    assert.equal(first,retry);
+    assert.equal(typeof retry,'string');
+    mode='truncate';
+    await assert.rejects(()=>buy(2),/Incomplete signed relay stream/);
+    mode='tamper';
+    await assert.rejects(()=>buy(3),/Invalid signed relay stream frame/);
+    assert.equal(generated,3);
+    assert.equal(observed.length,2);
+  } finally {gate.resolve();await pump.close();db.close();}
 });

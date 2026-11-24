@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { participantConfig } from '../src/participant-config.mjs';
 import { publicGenesis, resolvePublicLedger } from '../src/public-network.mjs';
@@ -9,6 +10,7 @@ import { startWalletUi } from '../src/wallet-ui.mjs';
 import { createWalletSender } from '../src/wallet-send.mjs';
 import { startAutoProvider } from '../src/auto-provider.mjs';
 import { manageProviderRelays } from '../src/participant-relay.mjs';
+import { startOpenAiGateway } from '../src/openai-gateway.mjs';
 
 export async function startParticipant() {
   const {dir,wallet,port,origin} = await participantConfig();
@@ -20,7 +22,23 @@ export async function startParticipant() {
     monitor:({instanceId}) => resolvePublicLedger({activation:true,excludeInstanceId:instanceId}),
     discover:origin ? ({instanceId,ledgerUrl}) => enrollAt(ledgerUrl,publicGenesis.hash,wallet,origin,instanceId) : undefined,
   });
-  let gui, auto, relays;
+  let gui, auto, relays, gateway, enabling, gatewayError;
+  const tokenFile=join(dir,'opencode.token');
+  async function enableOpenAi() {
+    if (gateway) return gateway.url;
+    enabling ??= (async () => {
+      const token=(await readFile(tokenFile,'utf8')).trim();
+      if (!/^[0-9a-f]{64}$/.test(token)) throw Error('Invalid local inference token');
+      const port=process.env.GPUCHAIN_OPENAI_PORT ?? '8792';
+      if (!/^\d+$/.test(port)) throw Error('Invalid GPUCHAIN_OPENAI_PORT');
+      gateway=await startOpenAiGateway({wallet,token,port:Number(port),affinityDir:dir});
+      gatewayError=undefined;
+      return gateway.url;
+    })();
+    try { return await enabling; }
+    catch (err) { if (err.code!=='ENOENT') gatewayError=err.message; throw err; }
+    finally { enabling=undefined; }
+  }
   const sender=createWalletSender({wallet});
   try {
     if (process.env.GPUCHAIN_AUTO_PROVIDER !== '0' && !process.env.GPUCHAIN_LOCAL_PROVIDER_URL) {
@@ -39,13 +57,21 @@ export async function startParticipant() {
       if (err.code !== 'EADDRINUSE' || process.env.GPUCHAIN_WALLET_PORT !== undefined) throw err;
       gui = await startWalletUi({...options,port:0});
     }
+    // A missing token leaves inference disabled. An unavailable inference port
+    // is reported independently of checkpoint verification.
+    await enableOpenAi().catch(()=>{});
   } catch (err) {
     await relays?.close();
     try { await auto?.close(); } finally { await node.close(); }
     throw err;
   }
-  return {url:node.url,guiUrl:gui.url,issueUnlock:sender.issueCode,async close() {
-    try { await gui.close(); } finally {
+  return {url:node.url,guiUrl:gui.url,issueUnlock:sender.issueCode,enableOpenAi,
+    get openAiUrl() { return gateway?.url ?? null; },
+    get openAiError() { return gatewayError; }, async close() {
+    try {
+      await enabling?.catch(()=>{});
+      try { await gateway?.close(); } finally { await gui.close(); }
+    } finally {
       await relays.close();
       try { await auto?.close(); } finally { await node.close(); }
     }

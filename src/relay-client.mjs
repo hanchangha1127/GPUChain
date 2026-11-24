@@ -5,10 +5,13 @@ import { hash, sign, verify } from './crypto.mjs';
 import { CONTEXT, MODEL } from './ledger.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 import { validateReasoningOptions } from './reasoning.mjs';
+import { chatResponseHash, validateChatReply } from './chat-protocol.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { PROBE_DOMAIN } from './routing.mjs';
 import { requestJson } from './http.mjs';
 import { MAX_RELAY_BOX, makeRelayKeyPair, openRelayBox, sealRelayBox } from './relay-crypto.mjs';
+import { streamAdapter, trackAssistantDeltas } from './inference-stream.mjs';
+import { MAX_FRAME_BOX, relayFrameReader, relayFrameWriter } from './relay-live.mjs';
 
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_WIRE = MAX_RELAY_BOX + 16_384;
@@ -21,27 +24,28 @@ const need = (ok,message) => { if (!ok) throw Error(message); };
 const envelope = (wallet,payload) => ({payload,signature:sign(wallet.privateKey,payload)});
 const signedNow = (wallet,op,meta) => envelope(wallet,{domain:domain(op),...meta,issuedAt:Date.now(),salt:salt()});
 
-function validProfile(p,maxOutput,reasoning) {
+function validProfile(p,maxOutput,reasoning,rich=false) {
   return p?.model === MODEL && p.contextWindow === CONTEXT && kvCacheAtLeastQ8(p.kvCache) &&
-    count(p.maxOutputTokens,maxOutput,CONTEXT) && (!reasoning || p.reasoningOptions === 1);
+    count(p.maxOutputTokens,maxOutput,CONTEXT) && (!reasoning || p.reasoningOptions === 1) &&
+    (!rich || p.chatProtocol===1);
 }
 
-function validOffer(offer,chainId,maxOutput,reasoning) {
+function validOffer(offer,chainId,maxOutput,reasoning,rich=false) {
   const p = offer?.payload, now = Date.now();
   return p?.domain === domain('presence') && p.chainId===chainId && HEX.test(p.publicKey) &&
     p.available===true && count(p.issuedAt,now-60_000,now+10_000) &&
-    count(p.expiresAt,now+1,p.issuedAt+60_000) && validProfile(p,maxOutput,reasoning) &&
+    count(p.expiresAt,now+1,p.issuedAt+60_000) && validProfile(p,maxOutput,reasoning,rich) &&
     verify(p.provider,p,offer.signature);
 }
 
 /** The observed RTT ends at the relay. It is not a full provider latency measurement. */
-export async function listRelayOffers(relayUrl,chainId,{signal,maxOutputTokens=1,reasoning=false}={}) {
+export async function listRelayOffers(relayUrl,chainId,{signal,maxOutputTokens=1,reasoning=false,chatProtocol=false}={}) {
   const url=normalizeProviderEndpoint(relayUrl);
   const start=performance.now();
   const list=await requestJson(base(url)+'/providers',{timeoutMs:4000,maxBytes:1024*1024,signal});
   const latencyMs=performance.now()-start;
   need(list?.chainId===chainId && Array.isArray(list.providers),'Wrong relay network or directory');
-  return list.providers.filter(o=>validOffer(o,chainId,maxOutputTokens,reasoning)).map(offer=>({
+  return list.providers.filter(o=>validOffer(o,chainId,maxOutputTokens,reasoning,chatProtocol)).map(offer=>({
     provider:offer.payload.provider,url,transport:'relay',offer,latencyMs,latencyKind:'relay-rtt'
   }));
 }
@@ -52,13 +56,14 @@ export async function getRelayOffer(relayUrl,chainId,provider,options) {
   return entry;
 }
 
-function checkReceipt(result,request,messages) {
-  const {message,payload,providerSignature}=result ?? {};
-  need(message?.role==='assistant' && (typeof message.content==='string' ||
+function checkReceipt(result,request,messages,chatOptions) {
+  const {message,payload,providerSignature,finishReason}=result ?? {};
+  if (chatOptions!==undefined) validateChatReply(message,finishReason,chatOptions);
+  else need(finishReason===undefined && message?.role==='assistant' && (typeof message.content==='string' ||
     (message.content===null && typeof message.reasoning_content==='string')),'Invalid relay response');
   need(payload?.type==='inference' && payload.chainId===request.chainId && payload.from===request.payer &&
     payload.provider===request.provider && payload.nonce===request.nonce && payload.requestHash===hash(request) &&
-    payload.responseHash===hash(message) && request.messagesHash===hash(messages) &&
+    payload.responseHash===chatResponseHash(message,finishReason) && request.messagesHash===hash(messages) &&
     payload.model===MODEL && payload.contextWindow===CONTEXT &&
     count(payload.inputTokens,1,request.maxInputTokens) && count(payload.cachedTokens,0,payload.inputTokens) &&
     count(payload.outputTokens,1,request.maxOutputTokens) && (payload.kvCache===undefined || kvCacheAtLeastQ8(payload.kvCache)) &&
@@ -71,14 +76,20 @@ function transient(error) {
 }
 
 /** Encrypt and submit one exact job; a relay is never given a plaintext request or reply. */
-export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request,signature,messages,
+export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request,signature,messages,chatOptions,onDelta,
   signal,pollMs=1000,resultTimeoutMs=3_630_000}) {
   validateReasoningOptions(request);
   need(request?.payer===wallet.address && request.provider===provider && request.chainId===chainId &&
     verify(wallet.address,request,signature) && hash(messages)===request.messagesHash,'Invalid relay request signature or messages');
   const reasoning=request.reasoningEffort!==undefined || request.reasoningBudgetTokens!==undefined;
-  const options={maxOutputTokens:request.maxOutputTokens,reasoning,signal};
-  if (!validOffer(offer,chainId,request.maxOutputTokens,reasoning) || offer.payload.provider!==provider) {
+  const rich=chatOptions!==undefined;
+  const streaming=chatOptions?.stream===true;
+  need(streaming===(typeof onDelta==='function'),'Streaming relay requests require a signed stream option and callback');
+  const tracker=streaming && trackAssistantDeltas(onDelta);
+  const reader=streaming && relayFrameReader(tracker.push);
+  need(request.chatOptionsHash===(rich?hash(chatOptions):undefined),'Invalid signed chat options');
+  const options={maxOutputTokens:request.maxOutputTokens,reasoning,chatProtocol:rich,signal};
+  if (!validOffer(offer,chainId,request.maxOutputTokens,reasoning,rich) || offer.payload.provider!==provider) {
     ({offer}=await getRelayOffer(relayUrl,chainId,provider,options));
   }
   const pair=makeRelayKeyPair(), blind=randomId();
@@ -89,11 +100,14 @@ export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request
   for (const key of ['reasoningEffort','reasoningBudgetTokens']) {
     if (request[key]!==undefined) authorization[key]=request[key];
   }
-  const box=sealRelayBox(pair.privateKey,authorization.providerKey,authorization,'request',{request,signature,messages,blind});
+  if (rich) authorization.chatProtocol=1;
+  if (streaming) authorization.stream=true;
+  const box=sealRelayBox(pair.privateKey,authorization.providerKey,authorization,'request',{request,signature,messages,chatOptions,blind});
   authorization.boxHash=hash(box);
   const submit={...envelope(wallet,authorization),box};
   const relay=base(relayUrl);
-  const post=(op,body,timeoutMs=15_000)=>requestJson(relay+'/'+op,{body,maxBytes:MAX_WIRE,timeoutMs,signal});
+  const post=(op,body,timeoutMs=15_000)=>requestJson(relay+'/'+op,{body,
+    maxBytes:op==='result' && streaming ? MAX_WIRE+8*(MAX_FRAME_BOX+2048) : MAX_WIRE,timeoutMs,signal});
   let accepted;
   try { accepted=await post('submit',submit); }
   catch (err) {
@@ -103,16 +117,32 @@ export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request
   }
   need(accepted.jobId===authorization.jobId,'Relay accepted a different job');
   const due=performance.now()+resultTimeoutMs;
+  let after=0;
   while (performance.now()<due) {
     signal?.throwIfAborted();
     let reply;
     try {
-      reply=await post('result',signedNow(wallet,'result',{chainId,payer:wallet.address,jobId:authorization.jobId}));
+      reply=await post('result',signedNow(wallet,'result',{chainId,payer:wallet.address,jobId:authorization.jobId,
+        ...(streaming ? {after} : {})}));
     } catch (err) {
       if (!transient(err) || signal?.aborted) throw err;
     }
     if (reply) {
       need(reply.jobId===authorization.jobId,'Unexpected relay job ID');
+      if (streaming) {
+        need(count(reply.tail,after,1_000_000) && Array.isArray(reply.frames) && reply.frames.length<=8 &&
+          reply.frames.length===Math.min(8,reply.tail-after),'Incomplete relay stream page');
+        for (const frame of reply.frames) {
+          const m=frame?.payload;
+          need(m?.domain===domain('frame') && m.chainId===chainId && m.provider===provider &&
+            m.jobId===authorization.jobId && m.index===after+1 && typeof frame.box==='string' &&
+            frame.box.length<=MAX_FRAME_BOX && m.boxHash===hash(frame.box) && verify(provider,m,frame.signature),
+          'Invalid signed relay stream frame');
+          const clear=openRelayBox(pair.privateKey,authorization.providerKey,{...authorization,index:m.index},'frame',frame.box);
+          await reader.push(clear);
+          after=m.index;
+        }
+      }
       if (reply.status==='done') {
         const proof=reply.reply, meta=proof?.payload;
         need(meta?.domain===domain('complete') && meta.jobId===authorization.jobId && meta.chainId===chainId &&
@@ -120,11 +150,18 @@ export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request
         'Invalid signed relay completion');
         const data=openRelayBox(pair.privateKey,authorization.providerKey,authorization,'response',proof.box);
         if (data.error) throw Error('Provider could not complete the relay request: '+String(data.error.code).slice(0,80));
-        return checkReceipt(data.result,request,messages);
+        const result=checkReceipt(data.result,request,messages,chatOptions);
+        if (streaming) {
+          need(after===reply.tail && data.frameCount===after,'Incomplete signed relay stream');
+          reader.finish();
+          tracker.verify(result.message);
+        }
+        return result;
       }
       need(reply.status==='queued'||reply.status==='running','Relay job expired or unavailable');
+      if (streaming && after<reply.tail) continue;
     }
-    await delay(Math.min(pollMs,Math.max(1,due-performance.now())),undefined,{signal});
+    await delay(Math.min(pollMs,streaming?400:Infinity,Math.max(1,due-performance.now())),undefined,{signal});
   }
   throw Error('Timed out waiting for the relay job; no inference receipt was accepted');
 }
@@ -149,6 +186,7 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
       model:MODEL,contextWindow:CONTEXT,kvCache:profile.kvCache,maxOutputTokens:profile.maxOutputTokens,
       available,issuedAt:now,expiresAt:now+60_000};
     if (profile.reasoningOptions===1) p.reasoningOptions=1;
+    if (profile.chatProtocol===1) p.chatProtocol=1;
     return envelope(wallet,p);
   }
   async function probe() {
@@ -170,23 +208,49 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
       HEX.test(p.jobId) && HEX.test(p.clientKey) && p.payer!==wallet.address && p.boxHash===hash(job.box) &&
       verify(p.payer,p,job.signature),'Invalid buyer relay authorization');
     need(!completed.has(p.jobId),'Relay offered an already completed job');
-    let out;
+    let out, writer;
     try {
       const now=Date.now();
       need(count(p.issuedAt,now-600_000,now+10_000) && count(p.expiresAt,now+1,p.issuedAt+600_000),
         'Expired relay job');
-      const {request,signature,messages,blind}=openRelayBox(pair.privateKey,p.clientKey,p,'request',job.box);
+      const {request,signature,messages,chatOptions,blind}=openRelayBox(pair.privateKey,p.clientKey,p,'request',job.box);
       need(request?.type==='inference-request' && HEX.test(blind) && p.requestHash===hash({request,blind}) &&
         request.chainId===chainId && request.payer===p.payer && request.provider===wallet.address &&
         request.nonce===p.nonce && request.maxInputTokens===p.maxInputTokens && request.maxOutputTokens===p.maxOutputTokens &&
         request.reasoningEffort===p.reasoningEffort && request.reasoningBudgetTokens===p.reasoningBudgetTokens &&
-        request.expiresAt===p.expiresAt && request.messagesHash===hash(messages) && verify(p.payer,request,signature),
+        request.expiresAt===p.expiresAt && request.messagesHash===hash(messages) &&
+        p.chatProtocol===(chatOptions===undefined?undefined:1) &&
+        p.stream===(chatOptions?.stream===true?true:undefined) &&
+        request.chatOptionsHash===(chatOptions===undefined?undefined:hash(chatOptions)) && verify(p.payer,request,signature),
       'Invalid decrypted request');
       validateReasoningOptions(request);
-      const result=await requestJson(adapter+'/v1/infer',{body:{request,signature,messages},
-        ...options(inferenceTimeoutMs,8*1024*1024)});
-      out={result:checkReceipt(result,request,messages)};
+      const body={request,signature,messages,chatOptions};
+      const httpOptions=options(inferenceTimeoutMs,8*1024*1024);
+      let result;
+      if (p.stream) {
+        writer=relayFrameWriter(async(index,part)=>{
+          const box=sealRelayBox(pair.privateKey,p.clientKey,{...p,index},'frame',part);
+          const msg={...signedNow(wallet,'frame',{chainId,provider:wallet.address,jobId:p.jobId,index,boxHash:hash(box)}),box};
+          // Retry the identical signed frame when its acknowledgement was lost or the reader is behind.
+          const due=performance.now()+45_000;
+          for (let pause=150;;pause=Math.min(1000,pause*2)) {
+            let ack;
+            try { ack=await post('frame',msg,MAX_FRAME_BOX+4096); }
+            catch (err) {
+              if (signal.aborted || !transient(err) || performance.now()>=due) throw err;
+              await delay(pause,undefined,{signal});
+              continue;
+            }
+            need(ack.index===index,'Wrong relay frame acknowledgement');
+            break;
+          }
+        });
+        result=await streamAdapter(adapter+'/v1/infer',body,writer.push,httpOptions);
+      } else result=await requestJson(adapter+'/v1/infer',{body,...httpOptions});
+      out={result:checkReceipt(result,request,messages,chatOptions)};
+      if (writer) out.frameCount=await writer.finish();
     } catch (err) {
+      if (writer) await writer.stop();
       if (signal.aborted) throw err;
       // The relay and logs never receive private engine errors, prompts or responses.
       out={error:{code:err.status ? 'ADAPTER_HTTP_'+err.status : 'INVALID_REQUEST_OR_RESPONSE'}};
@@ -200,7 +264,7 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
     if (pending) {
       const p={domain:domain('complete'),chainId,provider:wallet.address,jobId:pending.jobId,
         boxHash:hash(pending.box),issuedAt:Date.now(),salt:salt()};
-      try { await post('complete',{...envelope(wallet,p),box:pending.box}); }
+      try { await post('complete',{...envelope(wallet,p),box:pending.box},MAX_WIRE); }
       catch (err) {
         if (transient(err) || signal.aborted) throw err;
         if (![404,410].includes(err.status)) throw err;

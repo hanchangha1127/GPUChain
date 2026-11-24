@@ -36,6 +36,13 @@
       "when": 1795528515932,
       "tag": "0004_relay_mailbox",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1795531538719,
+      "tag": "0005_relay_stream",
+      "breakpoints": true
     }
   ]
 }

@@ -12,7 +12,7 @@ const TIMEOUT_MS = 900;
 const BUDGET_MS = 3000;
 const MAX_CANDIDATES = 64;
 
-export async function probeProvider(candidate, chainId, minOutput, reasoning = false) {
+export async function probeProvider(candidate, chainId, minOutput, reasoning = false, chatProtocol = false) {
   const challenge = randomBytes(16).toString('hex');
   const started = performance.now();
   const {payload, signature} = await requestJson(candidate.url + '/v1/probe?challenge=' + challenge,
@@ -22,6 +22,7 @@ export async function probeProvider(candidate, chainId, minOutput, reasoning = f
       payload.provider !== candidate.provider || payload.model !== MODEL || payload.contextWindow !== CONTEXT ||
       !kvCacheAtLeastQ8(payload.kvCache) ||
       (reasoning && payload.reasoningOptions !== 1) ||
+      (chatProtocol && payload.chatProtocol !== 1) ||
       payload.available !== true || !Number.isSafeInteger(payload.maxOutputTokens) ||
       payload.maxOutputTokens < minOutput || payload.maxOutputTokens > CONTEXT ||
       !verify(candidate.provider, payload, signature)) {
@@ -31,14 +32,14 @@ export async function probeProvider(candidate, chainId, minOutput, reasoning = f
 }
 
 /** Rank ready providers from a verified ledger snapshot using only public challenge responses. */
-export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 1, reasoning = false} = {}) {
+export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 1, reasoning = false, chatProtocol = false, eligible} = {}) {
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 ||
       maxOutputTokens > Math.min(CONTEXT, state.maxOutputTokens ?? CONTEXT)) return [];
   const allowLocal = ledgerUrl && isLoopbackEndpoint(ledgerUrl);
   const candidates = [];
   for (const provider of state.providers) {
     const endpoint = state.providerEndpoints?.[provider];
-    if (provider === payer || !endpoint) continue;
+    if (provider === payer || !endpoint || (eligible && !eligible.has(provider))) continue;
     let url;
     try { url = normalizeProviderEndpoint(endpoint); } catch { continue; }
     if (allowLocal || !isLoopbackEndpoint(url)) candidates.push({provider, url, samples:[]});
@@ -58,7 +59,7 @@ export async function rankProviders(state, {payer, ledgerUrl, maxOutputTokens = 
       while (next < ready.length && performance.now() + TIMEOUT_MS <= deadline) {
         const candidate = ready[next++];
         try {
-          candidate.samples.push(await probeProvider(candidate, state.chainId, maxOutputTokens, reasoning));
+          candidate.samples.push(await probeProvider(candidate, state.chainId, maxOutputTokens, reasoning,chatProtocol));
         } catch {
           // An unreachable, busy or ineligible node loses its earlier measurements.
           candidate.samples.length = 0;
