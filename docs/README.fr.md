@@ -68,10 +68,13 @@ Pour rejoindre le réseau après sa création, le nouveau fournisseur crée un p
 
 ~~~powershell
 $newProviderAddress = Read-Host "Adresse publique du nouveau fournisseur"
-node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress
+$providerOrigin = Read-Host "Origine HTTPS du fournisseur"
+node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress --url $providerOrigin
 ~~~
 
-Pour un déploiement sur plusieurs machines, distribuez le fichier de genèse par un canal de confiance et exposez les services distants du registre et des fournisseurs en HTTPS. Le client accepte HTTP sur l’interface de bouclage. Sélectionnez le séquenceur avec `--ledger URL` et le fournisseur avec `--provider-url URL --provider-address ADDRESS`. Appuyez sur Ctrl+C pour arrêter un service. Pour redémarrer le séquenceur, réutilisez le fichier de genèse, le portefeuille et le répertoire du registre.
+Pour déployer plusieurs machines, distribuez le fichier de genèse par un canal de confiance, exposez les services distants en HTTPS et indiquez le registre avec `--ledger URL`. Le séquenceur peut modifier l’origine publiée d’un fournisseur avec `set-provider-endpoint --address ADDRESS --url URL` ou la retirer en remplaçant `--url URL` par `--withdraw`. Le démarrage local inscrit automatiquement l’adresse de bouclage du fournisseur.
+
+La commande `node src/cli.mjs routes --genesis .local/genesis.json` classe les fournisseurs disponibles. Sans les deux options de fournisseur sur `chat`, le client sonde jusqu’à 64 candidats en trois secondes et vérifie la signature et la disponibilité de chacun sur la même chaîne. Il mesure jusqu’à trois allers-retours HTTP par candidat (HTTPS à distance) et envoie la question uniquement au fournisseur dont la latence médiane est la plus faible. Ce classement reflète la réactivité depuis la machine cliente. La distance géographique et le débit de génération peuvent donner des classements différents. Pour imposer un fournisseur, passez `--provider-url URL --provider-address ADDRESS`. Arrêtez le service avec Ctrl+C et redémarrez avec la même genèse, le même portefeuille et le même répertoire de registre.
 
 ## Vérification, conservation des données et confiance
 

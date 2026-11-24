@@ -4,6 +4,8 @@
 
 GPUChain은 **개발 중인 실험용 추론 크레딧 네트워크**입니다. RYZENStrata로 Qwen3.8-Flash-Next를 공급하면 추론을 요청한 사용자의 지갑에서 공급자의 지갑으로 코인이 이동합니다. 공급자는 자기 GPU를 끈 뒤에도 받은 코인으로 다른 공급자에게 추론을 요청하거나 다른 지갑에 송금할 수 있습니다. [RYZENStrata](https://github.com/hanchangha1127/RYZENStrata)
 
+**공개 테스트넷**의 원장 노드는 Sites에서 GPU 없이 운영합니다. 참여할 때는 저장소의 `networks/sites-testnet.json`과 호스팅된 원장 주소를 사용합니다. [실시간 원장 상태](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site) · [접속 명령](../hosting/sites/README.md)
+
 ## 실행
 
 저장소 주소와 [에이전트 실행 문서](../AGENTS.md)를 에이전트에 전달하면 설치부터 상태 확인까지 진행할 수 있습니다. Node.js 24 이상이 있는 컴퓨터에서는 저장소 루트에서 한 명령으로 로컬 네트워크를 시작합니다.
@@ -20,13 +22,16 @@ node scripts/bootstrap.mjs
 
 ~~~powershell
 $provider = (Get-Content -Raw .local/provider.json | ConvertFrom-Json).address
-node src/cli.mjs chat --genesis .local/genesis.json --wallet .local/user.json --provider-url http://127.0.0.1:8789 --provider-address $provider --text "한국어로 한 문장만 인사해 줘." --max-input 1024 --max-output 64
+node src/cli.mjs routes --genesis .local/genesis.json
+node src/cli.mjs chat --genesis .local/genesis.json --wallet .local/user.json --text "한국어로 한 문장만 인사해 줘." --max-input 1024 --max-output 64
 node src/cli.mjs balance --genesis .local/genesis.json --address $provider
 node src/cli.mjs transfer --genesis .local/genesis.json --wallet .local/user.json --to $provider --coins 0.01
 node src/cli.mjs verify --genesis .local/genesis.json
 ~~~
 
-다른 사람의 네트워크에 참여할 때는 운영자로부터 신뢰할 수 있는 제네시스 파일과 원장 주소를 받습니다. 요청할 때 `--ledger`, `--provider-url`, `--provider-address`에 실제 대상 값을 지정합니다. 각 컴퓨터에서 새 제네시스를 만들면 서로 다른 네트워크가 생성됩니다. 호스트 간 통신에는 HTTPS를 쓰고, 로컬 HTTP 포트는 기본 루프백 바인딩으로 운영할 수 있습니다. 운영자는 `add-provider` 명령으로 새 공급자의 공개 주소를 등록할 수 있습니다. [전체 CLI 예시](../README.md)
+다른 사람의 네트워크에 참여할 때는 운영자로부터 신뢰할 수 있는 제네시스 파일과 원장 주소를 받고 `--ledger URL`을 지정합니다. 운영자는 시퀀서 지갑으로 `add-provider --address ADDRESS --url URL`을 실행해 공급자의 지갑 주소와 HTTPS 서비스 주소를 함께 공지합니다. 기존 공급자는 `set-provider-endpoint --address ADDRESS --url URL`로 주소를 갱신하고 `--url URL` 대신 `--withdraw`를 주면 목록에서 접속 주소를 내립니다. 로컬 부트스트랩은 자체 공급 주소를 자동 등록합니다. [전체 CLI 예시](../README.md)
+
+`chat`에서 공급자 옵션을 생략하면 내 PC가 공지된 후보 최대 64곳 중 3초 이내에 측정한 노드를 비교합니다. 같은 체인의 준비된 공급자인지 서명으로 확인하고, 후보당 최대 세 번의 HTTP 왕복 시간(원격은 HTTPS)의 중앙값이 가장 작은 곳에만 프롬프트를 보냅니다. 이 값은 현재 접속 응답성이므로 지리적 거리나 추론 속도 순위와 다를 수 있습니다. 직접 지정하려면 `--provider-url URL --provider-address ADDRESS`를 함께 사용합니다.
 
 ## 단가와 블록 기준
 

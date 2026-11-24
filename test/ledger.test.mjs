@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { addressFromPrivateKey, generateWallet, hash, sign, verify } from '../src/crypto.mjs';
+import { isLoopbackEndpoint, normalizeProviderEndpoint } from '../src/provider-endpoint.mjs';
 import {
   CONTEXT, EPOCH_TOKENS, MODEL, applyBlock, charge, createBlock, createGenesis, replay, verifyBlock,
 } from '../src/ledger.mjs';
@@ -124,6 +125,47 @@ test('cached input earns credit with zero boundary progress for an all-cache req
   const next = applyBlock(net.state, createBlock(net.state, tx, net.sequencer));
   assert.equal(next.epochTokens, 0);
   assert.equal(next.balances[net.provider.address], 42 * 16);
+});
+
+test('sequencer publishes and withdraws a compact provider directory on an existing chain', () => {
+  const {state: initial, sequencer, provider, buyer} = network();
+  let state = initial;
+  function submit(type, fields, signer = sequencer) {
+    const p = {type, from: signer.address, nonce: (state.nonces[signer.address] ?? 0) + 1,
+      chainId: state.chainId, ...fields};
+    state = applyBlock(state, createBlock(state, signed(signer, p), sequencer));
+  }
+  assert.ok(!Object.hasOwn(state, 'providerEndpoints'));
+  const added = generateWallet().address;
+  const publish = {provider: added, endpoint: 'https://provider.example'};
+  assert.throws(() => submit('set-provider-endpoint', publish), /Unregistered/);
+  assert.throws(() => submit('add-provider', publish, buyer), /sequencer/);
+  submit('add-provider', publish);
+  assert.deepEqual(state.providerEndpoints, {[added]: publish.endpoint});
+  const update = {provider: provider.address, endpoint: 'https://second.example'};
+  assert.throws(() => submit('set-provider-endpoint', update, provider), /sequencer/);
+  submit('set-provider-endpoint', update);
+  assert.deepEqual(state.providerEndpoints, {[added]: publish.endpoint, [provider.address]: update.endpoint});
+  assert.throws(() => submit('set-provider-endpoint', {...update, endpoint: update.endpoint + '/'}), /canonical/);
+  submit('set-provider-endpoint', {...update, endpoint: 'http://127.0.0.1:8789'});
+  submit('set-provider-endpoint', {...publish, endpoint: null});
+  assert.deepEqual(state.providerEndpoints, {[provider.address]: 'http://127.0.0.1:8789'});
+  submit('set-provider-endpoint', {...update, endpoint: null});
+  assert.ok(!Object.hasOwn(state, 'providerEndpoints'));
+  assert.ok(state.providers.includes(provider.address) && state.providers.includes(added));
+  assert.deepEqual(state.balances, initial.balances);
+  assert.equal(state.totalWorkTokens, initial.totalWorkTokens);
+});
+
+test('provider directory accepts normalized HTTPS origins and loopback HTTP', () => {
+  assert.equal(normalizeProviderEndpoint('https://Provider.Example:443/'), 'https://provider.example');
+  assert.equal(normalizeProviderEndpoint('http://[::1]:8789'), 'http://[::1]:8789');
+  for (const host of ['127.7.3.1','api.localhost.','[::ffff:127.0.0.1]']) {
+    assert.equal(isLoopbackEndpoint('https://' + host), true);
+  }
+  for (const bad of ['http://gpu.example', 'https://user@gpu.example', 'https://gpu.example?',
+    'https://gpu.example#', 'https://gpu.example/?q=x', 'https://gpu.example/abc/..',
+    'file://localhost', null]) assert.throws(() => normalizeProviderEndpoint(bad));
 });
 
 test('one-billion-token boundary carries excess and activates scheduled settings for the next request', () => {

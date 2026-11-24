@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hash, sign, verify } from './crypto.mjs';
+import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 
 export const MODEL = 'Qwen3.8-Flash-Next';
 export const CONTEXT = 262_144;
@@ -128,6 +129,7 @@ const BASE = ['type', 'from', 'chainId', 'nonce'];
 const EXTRA = Object.freeze({
   transfer: ['to', 'amount'],
   'add-provider': ['provider'],
+  'set-provider-endpoint': ['provider', 'endpoint'],
   inference: ['provider', 'model', 'contextWindow', 'requestHash', 'responseHash', 'inputTokens', 'cachedTokens', 'outputTokens'],
   settings: ['maxOutputTokens'],
 });
@@ -135,7 +137,9 @@ const EXTRA = Object.freeze({
 function transition(state, tx) {
   const p = tx?.payload;
   requireValue(record(p) && typeof p.type === 'string' && Object.hasOwn(EXTRA, p.type), 'Unknown transaction type');
-  fields(p, [...BASE, ...EXTRA[p.type]]);
+  const expected = [...BASE, ...EXTRA[p.type]];
+  if (p.type === 'add-provider' && Object.hasOwn(p, 'endpoint')) expected.push('endpoint');
+  fields(p, expected);
   fields(tx, p.type === 'inference' ? ['payload', 'signature', 'providerSignature'] : ['payload', 'signature']);
   requireValue(p.chainId === state.chainId, 'Invalid chainId');
   hex64(p.from, 'sender');
@@ -145,11 +149,24 @@ function transition(state, tx) {
   const next = {...state, nonces: {...state.nonces, [p.from]: p.nonce}};
   if (p.type === 'transfer') {
     next.balances = pay(state, p.from, p.to, integer(p.amount, 'transfer amount', 1));
-  } else if (p.type === 'add-provider') {
-    requireValue(p.from === state.sequencer, 'Only the sequencer can register a provider');
+  } else if (p.type === 'add-provider' || p.type === 'set-provider-endpoint') {
+    requireValue(p.from === state.sequencer, 'Only the sequencer can register a provider or set its endpoint');
     hex64(p.provider, 'provider address');
-    requireValue(!state.providers.includes(p.provider), 'Provider already registered');
-    next.providers = [...state.providers, p.provider];
+    if (p.type === 'add-provider') {
+      requireValue(!state.providers.includes(p.provider), 'Provider already registered');
+      next.providers = [...state.providers, p.provider];
+    } else {
+      requireValue(state.providers.includes(p.provider), 'Unregistered provider');
+    }
+    if (p.endpoint === null && p.type === 'set-provider-endpoint') {
+      const endpoints = {...state.providerEndpoints};
+      delete endpoints[p.provider];
+      if (Object.keys(endpoints).length) next.providerEndpoints = endpoints;
+      else delete next.providerEndpoints;
+    } else if (Object.hasOwn(p, 'endpoint')) {
+      requireValue(normalizeProviderEndpoint(p.endpoint) === p.endpoint, 'Expected a canonical provider origin');
+      next.providerEndpoints = {...state.providerEndpoints, [p.provider]: p.endpoint};
+    }
   } else if (p.type === 'settings') {
     requireValue(p.from === state.sequencer, 'Only the sequencer can schedule settings');
     next.pendingMaxOutputTokens = integer(p.maxOutputTokens, 'maxOutputTokens', 1, CONTEXT);

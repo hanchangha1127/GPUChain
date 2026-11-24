@@ -2,24 +2,12 @@ import {
   createHash, createPrivateKey, createPublicKey, generateKeyPairSync,
   sign as edSign, verify as edVerify,
 } from 'node:crypto';
+import { canonical } from './canonical.mjs';
+
+export { canonical };
 
 // Ed25519 SubjectPublicKeyInfo header is fixed by RFC 8410.
 const PUBLIC_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
-
-/** Deterministic JSON encoding, including lexicographic ordering of object keys. */
-export function canonical(value) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + Array.from(value, canonical).join(',') + ']';
-  if (value && typeof value === 'object' &&
-      [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
-    return '{' + Object.keys(value).sort().map(key =>
-      JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
-  }
-  throw new Error('Expected a JSON value');
-}
 
 export function hash(value) {
   return createHash('sha256').update(canonical(value)).digest('hex');

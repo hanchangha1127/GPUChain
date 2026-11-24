@@ -3,6 +3,7 @@ import { hash, sign, verify } from './crypto.mjs';
 import { charge, CONTEXT, MODEL } from './ledger.mjs';
 import { readVerifiedState } from './node.mjs';
 import { requestJson } from './http.mjs';
+import { PROBE_DOMAIN } from './routing.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_REQUEST_AGE_MS = 10 * 60 * 1000;
@@ -101,13 +102,33 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
     }
   }
 
-  async function profile() {
-    const models = await backend('/models');
+  async function profile(deadline) {
+    const models = await backend('/models', undefined, deadline);
     const model = models?.data?.find(item => item.id === modelId && !item.alias_of);
     requireValue(model?.status?.value === 'loaded', 503, 'Configured Strata model is not loaded');
     const capacity = model.context_length ?? model.max_model_len ?? model.limit?.context;
     requireValue(isCount(capacity, CONTEXT), 503, 'Strata reports less than 262144 context tokens');
     return { capacity, outputLimit: model.limit?.output };
+  }
+
+  // Coalesce simultaneous readiness checks and avoid a backend call for each RTT sample.
+  // Inference independently checks the live profile immediately before generation.
+  let probeProfile;
+  let probeUntil = 0;
+  async function probe(challenge) {
+    requireValue(!busy, 429, 'Provider is handling another request');
+    if (!probeProfile || Date.now() >= probeUntil) {
+      probeUntil = Infinity;
+      probeProfile = profile(800).finally(() => { probeUntil = Date.now() + 250; });
+    }
+    const {outputLimit} = await probeProfile;
+    requireValue(!busy, 429, 'Provider is handling another request');
+    requireValue(outputLimit == null || isCount(outputLimit, 1), 503, 'Invalid Strata output limit');
+    const payload = {
+      domain:PROBE_DOMAIN, chainId, provider:wallet.address, challenge, available:true,
+      model:MODEL, contextWindow:CONTEXT, maxOutputTokens:Math.min(CONTEXT, outputLimit ?? CONTEXT)
+    };
+    return {payload, signature:sign(wallet.privateKey, payload)};
   }
 
   async function infer(body) {
@@ -181,6 +202,11 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
       res.end(JSON.stringify(value));
     };
     try {
+      if (req.method === 'GET' && req.url.startsWith('/v1/probe?')) {
+        const match = /^\/v1\/probe\?challenge=([0-9a-f]{32})$/.exec(req.url);
+        requireValue(match, 400, 'Expected a 16-byte hex challenge');
+        return send(200, await probe(match[1]));
+      }
       if (req.method === 'GET' && req.url === '/v1/info') {
         await profile();
         return send(200, { provider: wallet.address, chainId, model: MODEL, contextWindow: CONTEXT,

@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const cli = fileURLToPath(new URL('../src/cli.mjs',import.meta.url));
 
-test('CLI settles a Strata completion, transfers credits, verifies a follower and rejects a modified response', {timeout:60_000}, async () => {
+test('CLI settles a Strata completion, transfers credits, verifies a follower and rejects a modified response', {timeout:60_000}, async t => {
   const dir = await mkdtemp(join(tmpdir(),'gpuchain-e2e-'));
   const children = [];
   const servers = [];
@@ -120,6 +120,60 @@ test('CLI settles a Strata completion, transfers credits, verifies a follower an
     await assert.rejects(run(...chat,alteringProxy),/Invalid provider receipt/);
     assert.deepEqual(await run('verify',...common),primary);
     assert.equal(requests,2);
+
+    await t.test('automatic chat pays the lowest-latency ready provider and switches when it goes offline', async () => {
+      const {address:buyer} = await run('wallet','--out','routing-buyer.json');
+      await run('transfer',...common,'--wallet','seq.json','--to',buyer,'--coins','0.01');
+      const {address:slow} = await run('wallet','--out','slow.json');
+      const slowWorker = await startProcess('provider',...common,'--wallet','slow.json',
+        '--strata',strata+'/v1','--port','0');
+      const calls = {fast:0, slow:0};
+      let fastOnline = true;
+      async function gateway(name, workerUrl, delay) {
+        return serve(async (path, body) => {
+          if (name === 'fast' && !fastOnline) throw Error('Provider offline');
+          if (path.startsWith('/v1/probe?')) {
+            assert.equal(body,undefined);
+            if (delay) await new Promise(resolve => setTimeout(resolve,delay));
+          } else {
+            assert.equal(path,'/v1/infer');
+            calls[name]++;
+          }
+          const options = body ? {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)} : {};
+          const response = await fetch(workerUrl + path,options);
+          assert.ok(response.ok);
+          return response.json();
+        });
+      }
+      const fastUrl = await gateway('fast',worker,0);
+      const slowUrl = await gateway('slow',slowWorker,120);
+      const edit = ['set-provider-endpoint',...common,'--wallet','seq.json'];
+      await run('add-provider',...common,'--wallet','seq.json','--address',slow,'--url',slowUrl);
+      await run(...edit,'--address',provider,'--url',fastUrl);
+      const ranking = await run('routes',...common);
+      assert.deepEqual(ranking.providers.map(p => p.provider),[provider,slow]);
+      assert.ok(ranking.providers[0].latencyMs < ranking.providers[1].latencyMs);
+      assert.deepEqual(calls,{fast:0,slow:0});
+      const automatic = ['chat',...common,'--wallet','routing-buyer.json','--text','hello',
+        '--max-input','80','--max-output','12'];
+      const first = await run(...automatic);
+      assert.equal(first.provider,provider);
+      assert.equal(first.providerUrl,fastUrl);
+      assert.deepEqual(calls,{fast:1,slow:0});
+      assert.equal(await getBalance(provider),'0.000020024');
+      assert.equal(await getBalance(slow),'0');
+      fastOnline = false;
+      const second = await run(...automatic);
+      assert.equal(second.provider,slow);
+      assert.equal(second.providerUrl,slowUrl);
+      assert.deepEqual(calls,{fast:1,slow:1});
+      assert.equal(await getBalance(slow),'0.000010012');
+      assert.equal(await getBalance(buyer),'0.009979976');
+      await run(...edit,'--address',slow,'--withdraw');
+      assert.deepEqual((await run('routes',...common)).providers,[]);
+      await assert.rejects(run(...automatic));
+      assert.deepEqual(calls,{fast:1,slow:1});
+    });
   } finally {
     await Promise.all(children.map(async child => {
       if (child.exitCode !== null || child.signalCode !== null) return;

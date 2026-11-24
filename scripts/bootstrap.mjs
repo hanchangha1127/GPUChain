@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { link, mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
+import { link, mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { addressFromPrivateKey, generateWallet } from '../src/crypto.mjs';
+import { addressFromPrivateKey, generateWallet, sign } from '../src/crypto.mjs';
 import { createGenesis, NANOCOINS, replay } from '../src/ledger.mjs';
 import { readVerifiedState, startNode } from '../src/node.mjs';
 import { createProviderServer } from '../src/provider.mjs';
+import { isLoopbackEndpoint } from '../src/provider-endpoint.mjs';
 import { requestJson } from '../src/http.mjs';
 
 const DEFAULT_STRATA = 'http://127.0.0.1:8000/v1';
@@ -24,8 +25,8 @@ async function readJson(path) {
   catch { throw Error('Invalid JSON in ' + path); }
 }
 
-// Publish a complete, synced file without overwriting an existing identity.
-async function writeNew(path, value) {
+// Only the bootstrap marker can be replaced. Existing wallets are never overwritten.
+async function writeJson(path, value, replace = false) {
   const temp = path + '.' + randomUUID() + '.tmp';
   const file = await open(temp, 'wx', 0o600);
   try {
@@ -33,8 +34,11 @@ async function writeNew(path, value) {
       await file.writeFile(JSON.stringify(value, null, 2) + '\n');
       await file.sync();
     } finally { await file.close(); }
-    await link(temp, path);
-  } finally { await unlink(temp); }
+    if (replace) await rename(temp, path);
+    else await link(temp, path);
+  } finally {
+    await unlink(temp).catch(err => { if (err.code !== 'ENOENT') throw err; });
+  }
 }
 
 function lockDirectory(dir) {
@@ -88,7 +92,7 @@ async function identity(dir) {
   for (const role of roles) {
     if (!wallets[role]) {
       wallets[role] = generateWallet();
-      await writeNew(join(dir, role + '.json'), wallets[role]);
+      await writeJson(join(dir, role + '.json'), wallets[role]);
     }
   }
   const {sequencer, provider, user} = wallets;
@@ -102,9 +106,9 @@ async function identity(dir) {
     }
   } else {
     genesis = createGenesis(sequencer, {allocations: {[user.address]: NANOCOINS}, providers: [provider.address]});
-    await writeNew(join(dir, 'genesis.json'), genesis);
+    await writeJson(join(dir, 'genesis.json'), genesis);
   }
-  return {genesis, sequencer, provider, user, ledgerDir, hasMarker: marker !== undefined};
+  return {genesis, sequencer, provider, user, ledgerDir, marker};
 }
 
 function portNumber(value, name) {
@@ -134,15 +138,29 @@ export async function startLocal({dir = '.local', nodePort = 8787, providerPort 
   }
   const close = () => closing ??= release();
   try {
-    const {genesis, sequencer, provider, user, ledgerDir, hasMarker} = await identity(dir);
+    const {genesis, sequencer, provider, user, ledgerDir, marker} = await identity(dir);
     node = await startNode({dir: ledgerDir, genesis, wallet: sequencer, port: nodePort});
     const state = await readVerifiedState(node.url, genesis.hash);
-    if (!hasMarker) await writeNew(join(dir, '.bootstrap.json'), {chainId: state.chainId});
+    const markerPath = join(dir, '.bootstrap.json');
+    if (!marker) await writeJson(markerPath, {chainId: state.chainId});
     server = createProviderServer({wallet: provider, chainId: state.chainId, ledgerUrl: node.url,
       strataUrl, modelId, apiKey: process.env.STRATA_API_KEY});
     server.listen(providerPort, '127.0.0.1');
     await once(server, 'listening');
     const providerUrl = 'http://127.0.0.1:' + server.address().port;
+    const previous = state.providerEndpoints?.[provider.address];
+    // A missing listing after initialization means the operator withdrew the endpoint.
+    const manageLocal = previous ? isLoopbackEndpoint(previous) : !marker?.discoveryInitialized;
+    if (manageLocal && previous !== providerUrl) {
+      const payload = {type: 'set-provider-endpoint', chainId: state.chainId, from: sequencer.address,
+        nonce: (state.nonces[sequencer.address] ?? 0) + 1, provider: provider.address, endpoint: providerUrl};
+      await requestJson(node.url + '/v1/transactions', {
+        body: {payload, signature: sign(sequencer.privateKey, payload)}
+      });
+    }
+    if (!marker?.discoveryInitialized) {
+      await writeJson(markerPath, {chainId: state.chainId, discoveryInitialized: true}, true);
+    }
     let providerReady = false;
     let providerDetail;
     try {

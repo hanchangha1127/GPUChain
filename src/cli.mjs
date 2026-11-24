@@ -7,6 +7,8 @@ import { applyBlock, charge, CONTEXT, createGenesis, EPOCH_TOKENS, MODEL, replay
 import { readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
 import { requestJson } from './http.mjs';
+import { rankProviders } from './routing.mjs';
+import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 
 const usage = `GPUChain
   wallet   --out FILE
@@ -19,10 +21,12 @@ const usage = `GPUChain
   status | verify   --genesis FILE [--ledger URL]
   balance  --genesis FILE --address ADDRESS [--ledger URL]
   transfer --genesis FILE --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL]
-  chat     --genesis FILE --wallet KEY --provider-url URL --provider-address ADDRESS
+  routes   --genesis FILE [--ledger URL] [--max-output N] [--wallet KEY]
+  chat     --genesis FILE --wallet KEY [--provider-url URL --provider-address ADDRESS]
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
   settings --genesis FILE --wallet SEQUENCER_KEY --max-output N [--ledger URL]
-  add-provider --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS [--ledger URL]
+  add-provider --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS [--url URL] [--ledger URL]
+  set-provider-endpoint --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS (--url URL | --withdraw) [--ledger URL]
 Ledger defaults to http://127.0.0.1:8787. Strata defaults to http://127.0.0.1:8000/v1.`;
 
 const flags = {
@@ -32,11 +36,13 @@ const flags = {
   follower: ['genesis','upstream','dir','listen','port','sync-ms'],
   provider: ['genesis','wallet','ledger','strata','model-id','listen','port'],
   status: ['genesis','ledger'], verify: ['genesis','ledger'],
+  routes: ['genesis','ledger','max-output','wallet'],
   balance: ['genesis','ledger','address'],
   transfer: ['genesis','ledger','wallet','to','coins'],
   chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output'],
   settings: ['genesis','ledger','wallet','max-output'],
-  'add-provider': ['genesis','ledger','wallet','address']
+  'add-provider': ['genesis','ledger','wallet','address','url'],
+  'set-provider-endpoint': ['genesis','ledger','wallet','address','url','withdraw']
 };
 
 function required(values, name) {
@@ -90,7 +96,21 @@ async function writeNew(file, obj) {
 }
 
 async function walletFrom(values) {
-  const w = await readObject(required(values, 'wallet'));
+  const file = required(values, 'wallet');
+  let w;
+  if (file === '-') {
+    if (process.stdin.isTTY) throw Error('Pipe the wallet JSON on standard input');
+    const chunks = [];
+    let length = 0;
+    for await (const chunk of process.stdin) {
+      length += chunk.length;
+      if (length > 8192) throw Error('Wallet JSON exceeds 8 KiB');
+      chunks.push(chunk);
+    }
+    w = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } else {
+    w = await readObject(file);
+  }
   if (address(w.address) !== addressFromPrivateKey(w.privateKey)) throw Error('Wallet key mismatch');
   return w;
 }
@@ -115,8 +135,9 @@ function nextNonce(state, from) {
 }
 
 async function chat(v, wallet, base, state) {
-  const provider = address(required(v,'provider-address'));
-  if (!state.providers.includes(provider)) throw Error('Provider is absent from trusted chain');
+  if ((v['provider-url'] === undefined) !== (v['provider-address'] === undefined)) {
+    throw Error('To pin a provider, supply both --provider-url and --provider-address');
+  }
   if ((v.text !== undefined) === (v['text-file'] !== undefined)) throw Error('Supply one of --text and --text-file');
   const prompt = v.text ?? await readFile(v['text-file'],'utf8');
   if (!prompt.trim()) throw Error('Prompt is empty');
@@ -124,13 +145,23 @@ async function chat(v, wallet, base, state) {
   const maxInputTokens = uint(v['max-input'] ?? CONTEXT - maxOutputTokens, 'max-input', 1, CONTEXT - maxOutputTokens);
   const cap = charge({ inputTokens:maxInputTokens, cachedTokens:0, outputTokens:maxOutputTokens });
   if ((state.balances[wallet.address] || 0) < cap) throw Error('Insufficient balance for authorized token limits');
+  let target;
+  if (v['provider-address'] !== undefined) {
+    target = {provider:address(v['provider-address']),url:endpoint(v['provider-url'])};
+    if (!state.providers.includes(target.provider)) throw Error('Provider is absent from trusted chain');
+  } else {
+    const ranked = await rankProviders(state,{payer:wallet.address,ledgerUrl:base,maxOutputTokens});
+    target = ranked[0];
+    if (!target) throw Error('No available registered provider responded. Check advertised endpoints with routes.');
+  }
+  const {provider,url} = target;
   const messages = [{role:'user',content:prompt}];
   const request = {
     type:'inference-request', chainId:state.chainId, payer:wallet.address, provider,
     nonce:nextNonce(state,wallet.address), expiresAt:Date.now() + 300_000,
     messagesHash:hash(messages), maxOutputTokens, maxInputTokens
   };
-  const { message, payload, providerSignature } = await requestJson(endpoint(required(v,'provider-url')) + '/v1/infer',
+  const { message, payload, providerSignature } = await requestJson(url + '/v1/infer',
     {body:{request, signature:sign(wallet.privateKey,request), messages}, timeoutMs:3_630_000});
   if (message?.role !== 'assistant' ||
       !(typeof message.content === 'string' || (message.content === null && typeof message.reasoning_content === 'string'))) {
@@ -146,7 +177,8 @@ async function chat(v, wallet, base, state) {
   };
   if (hash(payload) !== hash(expected) || !verify(provider,expected,providerSignature)) throw Error('Invalid provider receipt');
   const settlement = await submit(base,state,expected,wallet,providerSignature);
-  return { message, usage:{inputTokens,cachedTokens,outputTokens}, coins:coins(charge(expected)), settlement };
+  return { provider, providerUrl:url, latencyMs:target.latencyMs, message,
+    usage:{inputTokens,cachedTokens,outputTokens}, coins:coins(charge(expected)), settlement };
 }
 
 function print(data) { process.stdout.write(JSON.stringify(data) + '\n'); }
@@ -168,7 +200,7 @@ async function main() {
   if (!command || ['--help','-h','help'].includes(command)) return console.log(usage);
   if (!Object.hasOwn(flags,command)) throw Error('Unknown command: ' + command);
   const options = Object.fromEntries(flags[command].map(name =>
-    [name,{type:'string',multiple:command === 'genesis' && ['provider','allocation'].includes(name)}]));
+    [name,{type:name === 'withdraw' ? 'boolean' : 'string',multiple:command === 'genesis' && ['provider','allocation'].includes(name)}]));
   const {values:v} = parseArgs({args,options});
   if (command === 'wallet') {
     const wallet = generateWallet();
@@ -216,6 +248,11 @@ async function main() {
       srv.close(err => err ? reject(err) : resolve())));
   }
   const state = await readVerifiedState(base,genesis.hash);
+  if (command === 'routes') {
+    const maxOutputTokens = uint(v['max-output'] ?? 1,'max-output',1,state.maxOutputTokens);
+    const payer = v.wallet ? (await walletFrom(v)).address : undefined;
+    return print({providers:await rankProviders(state,{payer,ledgerUrl:base,maxOutputTokens})});
+  }
   if (command === 'verify') return print({verified:true,scope:'signed-checkpoint',chainId:state.chainId,height:state.height,tip:state.tip});
   if (command === 'status') {
     const {chainId,height,tip,epoch,epochTokens,totalWorkTokens,maxOutputTokens,pendingMaxOutputTokens,providers} = state;
@@ -234,6 +271,10 @@ async function main() {
     details = {to:address(required(v,'to')),amount:nanocoins(required(v,'coins'))};
   } else if (command === 'add-provider') {
     details = {provider:address(required(v,'address'))};
+    if (v.url !== undefined) details.endpoint = normalizeProviderEndpoint(v.url);
+  } else if (command === 'set-provider-endpoint') {
+    if (Boolean(v.withdraw) === (v.url !== undefined)) throw Error('Supply one of --url and --withdraw');
+    details = {provider:address(required(v,'address')),endpoint:v.withdraw ? null : normalizeProviderEndpoint(v.url)};
   } else {
     details = {maxOutputTokens:uint(required(v,'max-output'),'max-output',1,CONTEXT)};
   }

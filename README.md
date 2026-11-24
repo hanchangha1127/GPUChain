@@ -6,6 +6,8 @@ GPUChain is an **experimental, unfinished inference-credit network** for Qwen3.8
 
 **Start a local network** with `node scripts/bootstrap.mjs` from this checkout using Node.js 24 or newer. The bootstrap creates the local wallets and genesis on first use, then starts the sequencer and provider adapter. The installation guide covers RYZENStrata setup and joining an existing network. [Agent setup guide](AGENTS.md)
 
+The **public testnet** operates a GPU-free sequencer on Sites. To join this network, use the pinned genesis in this checkout and the hosted ledger URL. The local bootstrap creates a separate network. [Live node](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site) · [Connect to the testnet](hosting/sites/README.md)
+
 ## Metering and epochs
 
 Each provider must make a **256K context window (262,144 tokens)** available. GPUChain checks RYZENStrata's loaded model and advertised capacity, then limits the signed input and output budgets to that window. Each request is billed for measured use.
@@ -66,10 +68,20 @@ node src/cli.mjs settings --genesis .local/genesis.json --wallet .local/sequence
 
 ~~~powershell
 $newProviderAddress = Read-Host "New provider's public address"
-node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress
+$providerOrigin = Read-Host "Provider HTTPS origin (for example https://gpu.example.com)"
+node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress --url $providerOrigin
 ~~~
 
-For multiple machines, distribute the trusted genesis file, give each role its own wallet and publish the required ledger and provider endpoints through HTTPS. The client accepts plain HTTP on loopback. Specify the sequencer with `--ledger URL` and the chosen provider with `--provider-url URL --provider-address ADDRESS`. Ctrl+C stops a service. Restart the sequencer with the same genesis, wallet and ledger directory.
+For multiple machines, distribute the trusted genesis file, expose the ledger and provider endpoints over HTTPS and pass the ledger origin with `--ledger URL`. The operator can update an existing listing with `set-provider-endpoint --address ADDRESS --url URL`, or remove its URL with `--withdraw`; both operations require the sequencer wallet and genesis. The local bootstrap advertises its loopback provider automatically. The separate-role quickstart above pins a provider explicitly.
+
+**Select a nearby provider automatically.** Omit both provider flags on `chat`. The client samples up to 64 advertised providers within a three-second budget and ranks eligible replies by the median of up to three HTTP round trips (HTTPS for remote nodes). Each signed probe checks the chain, provider identity, model, available capacity and output limit. This measures responsiveness from the requesting machine; geography and generation speed can differ. Only the selected provider receives the prompt. For a fixed provider, pass both `--provider-url URL` and `--provider-address ADDRESS`.
+
+~~~powershell
+node src/cli.mjs routes --genesis .local/genesis.json
+node src/cli.mjs chat --genesis .local/genesis.json --wallet .local/user.json --text "Hello" --max-input 1024 --max-output 128
+~~~
+
+Ctrl+C stops a service. Restart the sequencer with the same genesis, wallet and ledger directory.
 
 ## What each node keeps and verifies
 

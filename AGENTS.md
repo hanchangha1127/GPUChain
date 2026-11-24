@@ -4,7 +4,9 @@ Use these instructions when the user gives you this repository and asks you to i
 
 ## Choose the requested network
 
-For a new local installation, use the bootstrap below. It starts a loopback sequencer and provider adapter with a local test coin supply. For an **existing network**, obtain its trusted genesis file and ledger URL from the operator and follow the separate-role commands in the README. A new local genesis creates its own currency. A consumer connecting to someone else's provider only needs Node, a wallet, the trusted genesis, the ledger URL and the provider's address and URL.
+For the project's public testnet, use `networks/sites-testnet.json` and the HTTPS ledger in the [hosted node guide](hosting/sites/README.md). Use `verify` to check the pinned network, then `routes` to find ready inference providers from this client.
+
+For a new local installation, use the bootstrap below. It starts a loopback sequencer and provider adapter with a local test coin supply. For an **existing network**, obtain its trusted genesis file and ledger URL from the operator and follow the separate-role commands in the README. A new local genesis creates its own currency. A consumer needs Node, a funded wallet, the trusted genesis and the ledger URL. Automatic routing discovers advertised providers from a signed checkpoint. Operators publish their HTTPS origins with `add-provider --url` or `set-provider-endpoint`.
 
 ## Set up a local installation
 
@@ -34,7 +36,8 @@ In a second PowerShell terminal, send a small request on the **local bootstrap n
 
 ~~~powershell
 $provider = (Get-Content -Raw .local/provider.json | ConvertFrom-Json).address
-node src/cli.mjs chat --genesis .local/genesis.json --wallet .local/user.json --provider-url http://127.0.0.1:8789 --provider-address $provider --text "Reply with OK." --max-input 1024 --max-output 32
+node src/cli.mjs routes --genesis .local/genesis.json
+node src/cli.mjs chat --genesis .local/genesis.json --wallet .local/user.json --text "Reply with OK." --max-input 1024 --max-output 32
 node src/cli.mjs balance --genesis .local/genesis.json --address $provider
 node src/cli.mjs status --genesis .local/genesis.json
 ~~~

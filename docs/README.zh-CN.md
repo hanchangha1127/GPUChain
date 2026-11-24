@@ -68,10 +68,13 @@ node src/cli.mjs settings --genesis .local/genesis.json --wallet .local/sequence
 
 ~~~powershell
 $newProviderAddress = Read-Host "新提供者的钱包公开地址"
-node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress
+$providerOrigin = Read-Host "提供者的 HTTPS 服务地址"
+node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress --url $providerOrigin
 ~~~
 
-多机部署时，应向各参与者分发可信的创世文件，并通过 HTTPS 提供远程账本和推理接口。客户端允许在本机回环地址上使用 HTTP。通过 `--ledger URL` 选择排序节点，通过 `--provider-url URL --provider-address ADDRESS` 选择提供者。按 Ctrl+C 停止服务。重启排序节点时沿用原创世文件、钱包和账本目录。
+多机部署时，分发可信的创世文件，通过 HTTPS 提供远程账本和推理接口，并用 `--ledger URL` 指定账本。排序节点可用 `set-provider-endpoint --address ADDRESS --url URL` 更新已注册提供者的服务地址，将 `--url URL` 换成 `--withdraw` 即可撤下地址。本地启动脚本会自动登记回环地址。
+
+运行 `node src/cli.mjs routes --genesis .local/genesis.json` 可以查看当前可用提供者的排名。在 `chat` 中省略提供者参数时，客户端在三秒内抽查最多 64 个候选节点，通过签名确认对方属于同一链且可以接受请求。每个候选节点最多测量三次 HTTP 往返时间（远程使用 HTTPS），只把提示词发给中位数最低的提供者。测量反映请求方当前的连接响应速度，地理距离和生成速度的排序可能不同。要固定选择某个提供者，可同时指定 `--provider-url URL --provider-address ADDRESS`。按 Ctrl+C 停止服务，重启时使用相同的创世文件、钱包和账本目录。
 
 ## 验证、存储和信任边界
 

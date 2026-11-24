@@ -2,8 +2,10 @@ import { createServer } from 'node:http';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { addressFromPrivateKey, hash, sign, verify } from './crypto.mjs';
-import { applyBlock, createBlock, EPOCH_TOKENS, replay } from './ledger.mjs';
+import { addressFromPrivateKey, hash } from './crypto.mjs';
+import { EPOCH_TOKENS, replay } from './ledger.mjs';
+
+import { authenticate, nextCheckpoint } from './checkpoint.mjs';
 
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
@@ -21,27 +23,6 @@ async function jsonBody(stream, limit) {
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-}
-
-function checkpointProof(state, epochHashes) {
-  return {domain:'gpuchain/checkpoint/v1', stateHash:hash(state), epochsHash:hash(epochHashes)};
-}
-
-function authenticate(checkpoint, chainId) {
-  const {genesis, state, epochHashes, signature} = checkpoint;
-  const initial = replay([genesis], chainId);
-  check(state.chainId === initial.chainId && state.sequencer === initial.sequencer,
-    'Unexpected checkpoint identity');
-  check(Array.isArray(epochHashes) && epochHashes.length === state.epoch &&
-    epochHashes.every(value => typeof value === 'string' && HEX.test(value)), 'Invalid epoch hashes');
-  if (state.height === 0) {
-    check(signature === null && hash(initial) === hash(state), 'Invalid initial checkpoint');
-  } else {
-    check(Number.isSafeInteger(state.height) && state.height > 0 &&
-      verify(initial.sequencer, checkpointProof(state, epochHashes), signature),
-    'Invalid checkpoint signature');
-  }
-  return checkpoint;
 }
 
 function ledgerOrigin(endpoint) {
@@ -155,16 +136,7 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
     return syncing;
   }
   function submit(tx) {
-    const block = createBlock(head.state, tx, wallet);
-    const state = applyBlock(head.state, block);
-    let epochHashes = head.epochHashes;
-    if (state.epoch > head.state.epoch) {
-      const digest = hash({domain:'gpuchain/epoch/v1', previous:epochHashes.at(-1) ?? genesis.hash,
-        epoch:state.epoch, tip:state.tip, stateHash:hash(state)});
-      epochHashes = [...epochHashes, digest];
-    }
-    const next = {genesis, state, epochHashes,
-      signature:sign(wallet.privateKey, checkpointProof(state, epochHashes))};
+    const {block, next} = nextCheckpoint(head, tx, wallet);
     save(head, next);
     head = next;
     return block;

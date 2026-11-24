@@ -68,10 +68,13 @@ node src/cli.mjs settings --genesis .local/genesis.json --wallet .local/sequence
 
 ~~~powershell
 $newProviderAddress = Read-Host "新しい提供者の公開アドレス"
-node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress
+$providerOrigin = Read-Host "提供者の HTTPS オリジン"
+node src/cli.mjs add-provider --genesis .local/genesis.json --wallet .local/sequencer.json --address $newProviderAddress --url $providerOrigin
 ~~~
 
-複数マシンで運用する場合は、信頼するジェネシスファイルを配布し、各担当者が自分のウォレットを使います。台帳と提供者のエンドポイントは HTTPS で公開します。クライアントはループバックに限り HTTP も使用できます。シーケンサーは `--ledger URL`、提供者は `--provider-url URL --provider-address ADDRESS` で指定します。各プロセスは Ctrl+C で停止できます。シーケンサーを再起動するときは同じジェネシス、ウォレット、台帳ディレクトリを使います。
+複数マシンで運用する場合は信頼するジェネシスを配布し、台帳と提供者のエンドポイントを HTTPS で公開します。接続先の台帳は `--ledger URL` で指定します。登録済みの接続先はシーケンサーが `set-provider-endpoint --address ADDRESS --url URL` で更新でき、`--url URL` の代わりに `--withdraw` を指定すると掲載を取り下げます。ローカルのブートストラップは自身の接続先を自動登録します。
+
+`node src/cli.mjs routes --genesis .local/genesis.json` で利用可能な提供者の順位を確認できます。`chat` で提供者の指定を省略すると、クライアントが最大64候補を3秒以内に調べ、同じチェーンの稼働中の提供者の署名を確認します。候補ごとに最大3回計測した HTTP 往復時間（リモートは HTTPS）の中央値が最小の提供者にだけプロンプトを送ります。順位は利用者から見た応答時間で決まり、地理的な距離や生成速度とは異なる場合があります。固定したい場合は `--provider-url URL --provider-address ADDRESS` を指定します。Ctrl+C で停止でき、再起動には同じジェネシス、ウォレット、台帳ディレクトリを使います。
 
 ## 保存するデータと検証の範囲
 

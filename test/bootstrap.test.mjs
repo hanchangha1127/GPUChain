@@ -46,6 +46,8 @@ test('bootstrap completes partially initialized wallets, verifies live model, an
     assert.ok(first.ledgerReady && first.providerReady);
     assert.equal(first.userAddress, user.address);
     assert.ok(!JSON.stringify(first).includes(user.privateKey));
+    const discovered = await readVerifiedState(first.ledgerUrl, first.chainId);
+    assert.equal(discovered.providerEndpoints[first.providerAddress], first.providerUrl);
     await assert.rejects(() => startLocal(config), /Another GPUChain bootstrap/);
     const p = {type:'transfer', from:user.address, to:first.providerAddress, nonce:1,
       chainId:first.chainId, amount:42};
@@ -61,11 +63,50 @@ test('bootstrap completes partially initialized wallets, verifies live model, an
     assert.equal(app.info.chainId, first.chainId);
     assert.deepEqual(await contents(), originals);
     const state = await readVerifiedState(app.info.ledgerUrl, first.chainId);
+    assert.equal(state.providerEndpoints[first.providerAddress], app.info.providerUrl);
     assert.equal(state.balances[user.address], NANOCOINS - 42);
     assert.equal(state.balances[first.providerAddress], 42);
   } finally {
     await app?.close();
     await stopServer(backend);
+  }
+});
+
+test('bootstrap endpoint registration is idempotent and preserves operator changes', async t => {
+  const dir = await directory(t);
+  const offline = createServer((_req, res) => res.writeHead(503).end());
+  const strataUrl = await listen(offline);
+  let app;
+  try {
+    const config = {dir, strataUrl, nodePort: 0, providerPort: 0};
+    app = await startLocal(config);
+    const {providerAddress, providerUrl, chainId} = app.info;
+    config.providerPort = Number(new URL(providerUrl).port);
+    const wallet = JSON.parse(await readFile(join(dir, 'sequencer.json'), 'utf8'));
+    const read = () => readVerifiedState(app.info.ledgerUrl, chainId);
+    let state = await read();
+    const height = state.height;
+    await app.close();
+    app = await startLocal(config);
+    assert.equal((await read()).height, height);
+    for (const endpoint of ['https://registered.example', null]) {
+      const payload = {type:'set-provider-endpoint', chainId, from:wallet.address,
+        nonce:state.nonces[wallet.address] + 1, provider:providerAddress, endpoint};
+      const res = await fetch(app.info.ledgerUrl + '/v1/transactions', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body:JSON.stringify({payload, signature:sign(wallet.privateKey, payload)})
+      });
+      assert.equal(res.status, 201);
+      await res.json();
+      await app.close();
+      app = await startLocal(config);
+      state = await read();
+      assert.equal(state.providerEndpoints?.[providerAddress] ?? null, endpoint);
+      assert.equal(state.nonces[wallet.address], payload.nonce);
+    }
+  } finally {
+    await app?.close();
+    await stopServer(offline);
   }
 });
 

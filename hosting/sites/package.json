@@ -1,0 +1,11 @@
+{
+  "name": "gpuchain-sites-worker",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "devDependencies": {
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.0.1",
+    "esbuild": "0.25.12"
+  }
+}
