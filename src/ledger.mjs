@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { hash, sign, verify } from './crypto.mjs';
+import { decodeAmount, encodeAmount, RESERVE_NANOCOINS } from './amount.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 
 export const MODEL = 'Qwen3.8-Flash-Next';
@@ -7,8 +8,15 @@ export const CONTEXT = 262_144;
 export const EPOCH_TOKENS = 1_000_000_000;
 export const NANOCOINS = 1_000_000_000;
 export const RATES = Object.freeze({input: 150, output: 470, cached: 16});
+export const DISTRIBUTION_RESERVE = Object.freeze({
+  chainId:'a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460',
+  address:'95da9783a4ab7c8115ce1f4e599b2ab7f688779976d6221ea456d183429c7aae',
+  amount:RESERVE_NANOCOINS,
+  claim:'gpuchain:public-testnet:distribution-reserve:v1',
+});
 const PROTOCOL = 'gpuchain/1';
 const HEX64 = /^[0-9a-f]{64}$/;
+const RESERVE_ISSUER = '0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e';
 
 function requireValue(ok, message) {
   if (!ok) throw new Error(message);
@@ -119,10 +127,30 @@ function genesisState(block, trustedGenesisHash) {
 function pay(state, from, to, amount) {
   hex64(to, 'recipient');
   requireValue(from !== to, 'Sender and recipient must be different');
-  const balance = state.balances[from] ?? 0;
-  requireValue(balance >= amount, 'Insufficient balance');
-  return {...state.balances, [from]: balance - amount,
-    [to]: integer((state.balances[to] ?? 0) + amount, 'recipient balance')};
+  const n = decodeAmount(amount, 'transfer amount');
+  requireValue(n > 0n, 'Invalid transfer amount');
+  const balance = decodeAmount(state.balances[from] ?? 0);
+  requireValue(balance >= n, 'Insufficient balance');
+  return {...state.balances, [from]: encodeAmount(balance - n),
+    [to]: encodeAmount(decodeAmount(state.balances[to] ?? 0) + n, 'recipient balance')};
+}
+
+/** Compute the fixed reserve effect. The enclosing transition checks the signed nonce and sender. */
+export function distributionReserveEffect(state, payload) {
+  const r = DISTRIBUTION_RESERVE;
+  requireValue(state.chainId === r.chainId && payload.chainId === r.chainId,
+    'Reserve issuance requires the original public testnet');
+  requireValue(payload.type === 'issue-reserve' && payload.from === RESERVE_ISSUER && payload.from === state.sequencer,
+    'Only the genesis sequencer can issue the reserve');
+  requireValue(payload.claim === r.claim && payload.to === r.address && payload.amount === r.amount,
+    'Invalid distribution reserve terms');
+  requireValue(!Object.hasOwn(state,'reserveClaim'), 'Distribution reserve already issued');
+  requireValue(state.supply === NANOCOINS, 'Unexpected pre-issuance testnet supply');
+  const units = decodeAmount(r.amount);
+  return {
+    reserveClaim:r.claim, supply:encodeAmount(decodeAmount(state.supply) + units),
+    balances:{...state.balances,[r.address]:encodeAmount(decodeAmount(state.balances[r.address] ?? 0) + units)},
+  };
 }
 
 const BASE = ['type', 'from', 'chainId', 'nonce'];
@@ -133,6 +161,7 @@ export function canValidate(state, address) {
 
 const EXTRA = Object.freeze({
   transfer: ['to', 'amount'],
+  'issue-reserve': ['to', 'amount', 'claim'],
   'add-provider': ['provider'],
   'add-validator': ['validator'],
   'set-provider-endpoint': ['provider', 'endpoint'],
@@ -154,7 +183,9 @@ function transition(state, tx) {
   signature(p.from, p, tx.signature, 'sender');
   const next = {...state, nonces: {...state.nonces, [p.from]: p.nonce}};
   if (p.type === 'transfer') {
-    next.balances = pay(state, p.from, p.to, integer(p.amount, 'transfer amount', 1));
+    next.balances = pay(state, p.from, p.to, p.amount);
+  } else if (p.type === 'issue-reserve') {
+    Object.assign(next,distributionReserveEffect(state,p));
   } else if (p.type === 'add-validator') {
     requireValue(p.from === state.sequencer, 'Only the sequencer can authorize a validator');
     hex64(p.validator, 'validator address');
@@ -210,6 +241,7 @@ function transition(state, tx) {
 /** Apply the same signed transaction rules to a quorum-selected block. */
 export function applyQuorumTransaction(state, tx, tip) {
   hex64(tip, 'quorum block hash');
+  requireValue(tx?.payload?.type !== 'issue-reserve', 'Reserve issuance is closed after activation');
   requireValue(tx?.payload?.type !== 'add-validator', 'The voting committee is fixed after activation');
   return immutable({...transition(state, tx),height:integer(state.height+1,'height'),tip});
 }

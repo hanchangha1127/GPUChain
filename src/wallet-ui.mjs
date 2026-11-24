@@ -2,12 +2,14 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { CONTEXT, EPOCH_TOKENS, MODEL, RATES } from './ledger.mjs';
+import { isAmount } from './amount.mjs';
 import { requestJson } from './http.mjs';
 
 const assets = [
-  ['/', 'index.html', 'text/html; charset=utf-8'],
-  ['/style.css', 'style.css', 'text/css; charset=utf-8'],
-  ['/app.js', 'app.js', 'text/javascript; charset=utf-8'],
+  ['/', '../ui/wallet/index.html', 'text/html; charset=utf-8'],
+  ['/style.css', '../ui/wallet/style.css', 'text/css; charset=utf-8'],
+  ['/app.js', '../ui/wallet/app.js', 'text/javascript; charset=utf-8'],
+  ['/amount.mjs', './amount.mjs', 'text/javascript; charset=utf-8'],
 ];
 const headers = {
   'cache-control':'no-store',
@@ -63,7 +65,7 @@ function overview({status, checkpoint}, sampled) {
   const address = status.address;
   const balance = state ? state.balances[address] ?? 0 : null;
   const nonce = state ? state.nonces[address] ?? 0 : null;
-  if (state && (!count(balance) || !count(nonce))) throw Error('Invalid account counters');
+  if (state && (!isAmount(balance) || !count(nonce))) throw Error('Invalid account counters');
   const inference = {
     nodeRunsInference:false,
     walletRegistered:state ? state.providers.includes(address) : null,
@@ -109,7 +111,7 @@ export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://1
   if (typeof getSnapshot !== 'function') throw Error('A local checkpoint reader is required');
   const sample = sampler(localProvider(providerUrl));
   const pages = new Map(await Promise.all(assets.map(async ([path,file,type]) =>
-    [path,{data:await readFile(new URL('../ui/wallet/'+file,import.meta.url)),type}])));
+    [path,{data:await readFile(new URL(file,import.meta.url)),type}])));
   const server = createServer(async (req,res) => {
     function send(status,type,body,extra={}) {
       res.writeHead(status,{...headers,...extra,'content-type':type});

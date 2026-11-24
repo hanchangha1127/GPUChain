@@ -84,10 +84,27 @@ test('wallet UI rejects cross-origin, forwarded and mutating requests and serves
   for (const path of ['/validator.wallet.json','/v1/checkpoint','/api/transactions']) {
     assert.equal((await read(s.url,{path})).status,404);
   }
-  for (const path of ['/','/style.css','/app.js']) assert.equal((await read(s.url,{path})).status,200);
+  for (const path of ['/','/style.css','/app.js','/amount.mjs']) assert.equal((await read(s.url,{path})).status,200);
   assert.equal(accessed,0);
   await assert.rejects(startWalletUi({getSnapshot:()=>data,port:0,providerUrl:'https://example.org'}),/loopback/);
   await assert.rejects(startWalletUi({getSnapshot:()=>data,port:0,providerUrl:'http://secret@127.0.0.1'}),/loopback/);
+});
+
+test('wallet preserves every nanocoin above the safe integer range and rejects imprecise numbers',async t=>{
+  const data=fixture();
+  let balance='1000000000000000000000';
+  const getSnapshot=()=>({status:data.status,checkpoint:{
+    ...data.checkpoint,state:{...data.checkpoint.state,balances:{[data.owner.address]:balance}}
+  }});
+  const s=await startWalletUi({getSnapshot,port:0}); t.after(s.close);
+  for (const amount of ['1000000000000000000000','999999999999999999999',101]) {
+    balance=amount;
+    const result=await read(s.url);
+    assert.equal(result.status,200);
+    assert.equal(JSON.parse(result.body).wallet.balanceNanocoins,amount);
+  }
+  balance=1e21;
+  assert.equal((await read(s.url)).status,503);
 });
 
 test('unknown local state or unrelated adapters cannot appear as zero balance or active mining',async t=>{

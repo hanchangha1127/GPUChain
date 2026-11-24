@@ -3,7 +3,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { parseArgs } from 'node:util';
 import { addressFromPrivateKey, generateWallet, sign, verify, hash } from './crypto.mjs';
-import { applyBlock, charge, CONTEXT, createGenesis, EPOCH_TOKENS, MODEL, replay, verifyBlock } from './ledger.mjs';
+import { applyBlock, charge, CONTEXT, createGenesis, DISTRIBUTION_RESERVE, EPOCH_TOKENS, MODEL, replay, verifyBlock } from './ledger.mjs';
+import { decodeAmount, formatCoins, parseCoins } from './amount.mjs';
 import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
 import { requestJson } from './http.mjs';
@@ -28,6 +29,7 @@ const usage = `GPUChain
   status | verify   [--genesis FILE] [--ledger URL]
   balance  [--genesis FILE] --address ADDRESS [--ledger URL]
   transfer [--genesis FILE] --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL]
+  issue-reserve --wallet SEQUENCER_KEY [--ledger URL]  (one-time public testnet distribution)
   routes   [--genesis FILE] [--ledger URL] [--max-output N] [--wallet KEY]
   chat     [--genesis FILE] --wallet KEY [--provider-url URL --provider-address ADDRESS]
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
@@ -49,6 +51,7 @@ const flags = {
   routes: ['genesis','ledger','max-output','wallet'],
   balance: ['genesis','ledger','address'],
   transfer: ['genesis','ledger','wallet','to','coins'],
+  'issue-reserve': ['genesis','ledger','wallet'],
   chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output'],
   settings: ['genesis','ledger','wallet','max-output'],
   'add-provider': ['genesis','ledger','wallet','address','url'],
@@ -72,20 +75,6 @@ function uint(value, label, min = 0, max = Number.MAX_SAFE_INTEGER) {
 function address(value) {
   if (!/^[a-f0-9]{64}$/.test(value)) throw Error('Expected a 64-character public address');
   return value;
-}
-
-function nanocoins(value) {
-  if (!/^\d{1,16}(?:\.\d{1,9})?$/.test(value)) throw Error('Use a positive coin amount with up to nine decimal places');
-  const [left, right = ''] = value.split('.');
-  const n = BigInt(left) * 1000000000n + BigInt(right.padEnd(9, '0'));
-  if (n <= 0 || n > BigInt(Number.MAX_SAFE_INTEGER)) throw Error('Coin amount out of range');
-  return Number(n);
-}
-
-function coins(n) {
-  const units = BigInt(n);
-  const fraction = String(units % 1000000000n).padStart(9, '0').replace(/0+$/, '');
-  return String(units / 1000000000n) + (fraction ? '.' + fraction : '');
 }
 
 function endpoint(value) {
@@ -167,7 +156,7 @@ async function chat(v, wallet, ledger, resolveSettlement) {
   const maxOutputTokens = uint(v['max-output'] ?? Math.min(512,state.maxOutputTokens), 'max-output', 1, state.maxOutputTokens);
   const maxInputTokens = uint(v['max-input'] ?? CONTEXT - maxOutputTokens, 'max-input', 1, CONTEXT - maxOutputTokens);
   const cap = charge({ inputTokens:maxInputTokens, cachedTokens:0, outputTokens:maxOutputTokens });
-  if ((state.balances[wallet.address] || 0) < cap) throw Error('Insufficient balance for authorized token limits');
+  if (decodeAmount(state.balances[wallet.address] ?? 0) < BigInt(cap)) throw Error('Insufficient balance for authorized token limits');
   let target;
   if (v['provider-address'] !== undefined) {
     target = {provider:address(v['provider-address']),url:endpoint(v['provider-url'])};
@@ -205,7 +194,7 @@ async function chat(v, wallet, ledger, resolveSettlement) {
   }
   const settlement = await submit(targetLedger,expected,wallet,providerSignature);
   return { provider, providerUrl:url, latencyMs:target.latencyMs, message,
-    usage:{inputTokens,cachedTokens,outputTokens}, coins:coins(charge(expected)), settlement };
+    usage:{inputTokens,cachedTokens,outputTokens}, coins:formatCoins(charge(expected)), settlement };
 }
 
 function print(data) { process.stdout.write(JSON.stringify(data) + '\n'); }
@@ -241,7 +230,9 @@ async function main() {
       if (parts.length !== 2) throw Error('Expected --allocation ADDRESS=COINS');
       const addr = address(parts[0]);
       if (Object.hasOwn(allocations,addr)) throw Error('Repeated allocation');
-      allocations[addr] = nanocoins(parts[1]);
+      const allocation = parseCoins(parts[1]);
+      if (!Number.isSafeInteger(allocation)) throw Error('Genesis allocation exceeds the legacy safe-integer limit');
+      allocations[addr] = allocation;
     }
     const providers = (v.provider ?? []).map(address);
     const maxOutputTokens = uint(v['max-output'] ?? CONTEXT,'max-output',1,CONTEXT);
@@ -254,6 +245,9 @@ async function main() {
   const genesis = v.genesis ? await readObject(v.genesis) : publicGenesis;
   replay([genesis],genesis.hash);
   const publicNetwork = genesis.hash === publicGenesis.hash;
+  if (command === 'issue-reserve' && genesis.hash !== DISTRIBUTION_RESERVE.chainId) {
+    throw Error('Reserve issuance requires the official public testnet genesis');
+  }
   const discover = publicNetwork && v.ledger === undefined;
   const fixed = v.ledger ? endpoint(v.ledger) : 'http://127.0.0.1:8787';
   const listen = v.listen || '127.0.0.1';
@@ -321,7 +315,7 @@ async function main() {
   }
   if (command === 'balance') {
     const addr = address(required(v,'address'));
-    return print({address:addr,coins:coins(state.balances[addr] || 0),nonce:state.nonces[addr] || 0});
+    return print({address:addr,coins:formatCoins(state.balances[addr] ?? 0),nonce:state.nonces[addr] || 0});
   }
   const wallet = await walletFrom(v);
   if (command === 'chat') return print(await chat(v,wallet,ledger,
@@ -329,7 +323,12 @@ async function main() {
   const common = {chainId:state.chainId,from:wallet.address,nonce:nextNonce(state,wallet.address)};
   let details;
   if (command === 'transfer') {
-    details = {to:address(required(v,'to')),amount:nanocoins(required(v,'coins'))};
+    details = {to:address(required(v,'to')),amount:parseCoins(required(v,'coins'))};
+  } else if (command === 'issue-reserve') {
+    if (wallet.address !== genesis.payload.sequencer) throw Error('The genesis sequencer wallet must authorize reserve issuance');
+    if (state.reserveClaim) throw Error('Public testnet reserve already issued');
+    const {address:to,amount,claim} = DISTRIBUTION_RESERVE;
+    details = {to,amount,claim};
   } else if (command === 'add-provider') {
     details = {provider:address(required(v,'address'))};
     if (v.url !== undefined) details.endpoint = normalizeProviderEndpoint(v.url);

@@ -1,4 +1,4 @@
-'use strict';
+import { decodeAmount, isAmount } from './amount.mjs';
 
 const el = id => document.getElementById(id);
 const numberFormat = new Intl.NumberFormat('ko-KR');
@@ -27,11 +27,11 @@ function time(value,format) {
   return Number.isFinite(date.getTime()) ? format.format(date) : '—';
 }
 function coins(nano) {
-  if (!Number.isSafeInteger(nano) || nano < 0) return '—';
-  const n = BigInt(nano);
+  if (!isAmount(nano)) return '—';
+  const n = decodeAmount(nano);
   const whole = n/1000000000n;
-  const fraction = (n%1000000000n).toString().padStart(9,'0').replace(/0+$/,'').padEnd(2,'0');
-  return numberFormat.format(whole)+'.'+fraction;
+  const fraction = (n%1000000000n).toString().padStart(9,'0').replace(/0+$/,'');
+  return numberFormat.format(whole)+(fraction ? '.'+fraction : '');
 }
 function badge(id,text,tone) {
   const item = el(id);
@@ -48,7 +48,7 @@ function render(data) {
   const amount = coins(wallet.balanceNanocoins);
   show('balance',amount);
   el('balance').classList.toggle('long-amount',amount.length > 13);
-  show('nano',amount === '—' ? '검증된 잔액 대기 중' : count(wallet.balanceNanocoins)+' 나노코인');
+  show('nano',amount === '—' ? '검증된 잔액 대기 중' : numberFormat.format(decodeAmount(wallet.balanceNanocoins))+' 나노코인');
   show('address',wallet.address);
   el('copy').disabled = !wallet.address;
   show('nonce',count(wallet.nonce));

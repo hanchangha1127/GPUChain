@@ -18,6 +18,8 @@ Sites certifies three ready validators and seals its final checkpoint. Two of th
 
 ## Metering and epochs
 
+The original public genesis allocates one coin. A single sequencer-signed `issue-reserve` transaction can add exactly 1,000,000,000,000 testnet coins to the designated distribution wallet. The chain records a permanent issuance marker. After issuance, total supply is 1,000,000,000,001 coins. Wallets and transfers use exact integer nanocoins, including amounts above JavaScript's safe integer range. The reserve is an inventory of inference credits; a proposed or published sale price does not establish a dollar redemption right.
+
 Each provider must make a **256K context window (262,144 tokens)** available. GPUChain checks RYZENStrata's loaded model and advertised capacity, then limits the signed input and output budgets to that window. Each request is billed for measured use.
 
 | Usage | Coins per 1 million tokens | Counts toward an epoch |

@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { hash, sign, verify } from './crypto.mjs';
 import { charge, CONTEXT, MODEL } from './ledger.mjs';
+import { decodeAmount } from './amount.mjs';
 import { readVerifiedState } from './node.mjs';
 import { requestJson } from './http.mjs';
 import { PROBE_DOMAIN } from './routing.mjs';
@@ -144,7 +145,7 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl = '
     requireValue(request.maxOutputTokens <= state.maxOutputTokens, 400, 'Output budget exceeds epoch limit');
     const reserve = charge({ inputTokens: request.maxInputTokens, cachedTokens: 0,
       outputTokens: request.maxOutputTokens });
-    requireValue((state.balances[request.payer] ?? 0) >= reserve, 402, 'Insufficient balance for request budget');
+    requireValue(decodeAmount(state.balances[request.payer] ?? 0) >= BigInt(reserve), 402, 'Insufficient balance for request budget');
     const requestHash = hash(request);
     const key = request.payer + ':' + request.nonce;
     const now = Date.now();
