@@ -6,7 +6,8 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { addressFromPrivateKey, generateWallet, sign } from '../src/crypto.mjs';
+import { generateWallet, sign } from '../src/crypto.mjs';
+import { readRuntimeWallet, writeRuntimeWallet } from '../src/runtime-wallet.mjs';
 import { createGenesis, NANOCOINS, replay } from '../src/ledger.mjs';
 import { readVerifiedState, startNode } from '../src/node.mjs';
 import { createProviderServer } from '../src/provider.mjs';
@@ -79,20 +80,19 @@ async function identity(dir) {
   if (hasDB && !genesis) throw Error('Restore the genesis file matching the existing ledger database');
   const wallets = {};
   for (const role of roles) {
-    const wallet = await readJson(join(dir, role + '.json'));
+    const wallet = await readRuntimeWallet(join(dir,role+'.json')).catch(err=>{
+      if (err.code!=='ENOENT') throw err;
+    });
     if (wallet === undefined) {
       if (genesis) throw Error('Restore the missing ' + role + ' wallet for the existing genesis');
     } else {
-      if (!wallet || addressFromPrivateKey(wallet.privateKey) !== wallet.address) {
-        throw Error('Invalid ' + role + ' wallet');
-      }
       wallets[role] = wallet;
     }
   }
   for (const role of roles) {
     if (!wallets[role]) {
       wallets[role] = generateWallet();
-      await writeJson(join(dir, role + '.json'), wallets[role]);
+      await writeRuntimeWallet(join(dir, role + '.json'), wallets[role]);
     }
   }
   const {sequencer, provider, user} = wallets;

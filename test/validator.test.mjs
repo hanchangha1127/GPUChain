@@ -11,6 +11,7 @@ import { nextCheckpoint } from '../src/checkpoint.mjs';
 import { createGenesis, replay } from '../src/ledger.mjs';
 import { startValidator } from '../src/validator.mjs';
 import { requestJson } from '../src/http.mjs';
+import { verifyOutcome } from '../src/transaction-outcome.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(),'gpuchain-paxos-'));
@@ -69,6 +70,8 @@ test('independent validators continue without the bootstrap, recover lagging pee
   await f.start(1);
   const ack2 = await f.call(0,'transactions',follow);
   assert.equal(ack2.checkpoint.state.balances[f.buyer.address],74);
+  const earlierProof=await f.call(0,'transaction-outcomes/'+hash(initial));
+  assert.deepEqual(verifyOutcome(earlierProof,initial,ack2.checkpoint),{height:1,hash:ack.block.hash});
   await f.start(2);
   assert.equal((await f.call(2,'checkpoint')).state.tip,ack2.block.hash);
   await assert.rejects(f.call(2,'transactions',follow),/nonce/i);

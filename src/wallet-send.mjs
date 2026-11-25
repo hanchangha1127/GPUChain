@@ -22,10 +22,11 @@ function equal(a,b) {
 }
 
 /** All unlock state is process-local. The control channel alone can issue a code. */
-export function createWalletSender({wallet,pin=publicGenesis.hash,resolveLedger=()=>resolvePublicLedger({write:true}),
+export function createWalletSender({wallet,pin=publicGenesis.hash,spends,resolveLedger=()=>resolvePublicLedger({write:true}),
   submit=submitSignedTransaction,now=Date.now}) {
   if (addressFromPrivateKey(wallet.privateKey)!==wallet.address) throw Error('Incorrect local wallet key');
   let pairing, session, sending=false;
+  const exclusive=fn=>spends ? spends.run('transfer',resolveLedger,fn,{waitMs:10_000}) : fn();
   function issueCode() {
     expect(!sending,409,'SENDING','A transfer is pending');
     session=undefined;
@@ -72,7 +73,7 @@ export function createWalletSender({wallet,pin=publicGenesis.hash,resolveLedger=
     const draftId=token();
     owner.draft=null;
     owner.preparing=draftId;
-    const ledger=await latest();
+    const ledger=await exclusive(latest);
     authorize(auth);
     expect(owner.preparing===draftId,409,'STATE_CHANGED','A newer transfer draft replaced this one');
     const nonce=nextNonce(ledger.state,amount);
@@ -90,20 +91,23 @@ export function createWalletSender({wallet,pin=publicGenesis.hash,resolveLedger=
     session=undefined;
     sending=true;
     try {
-      const ledger=await latest();
-      try {verifyAdvance(draft.checkpoint,ledger.checkpoint);}
-      catch {throw new SendError(409,'STATE_CHANGED','Ledger changed; prepare a new transfer');}
-      expect(hash(ledger.checkpoint.authority ?? null)===hash(draft.checkpoint.authority ?? null) &&
-        ledger.state.epoch===draft.checkpoint.state.epoch,409,'STATE_CHANGED','Ledger settings changed; review again');
-      const {payload}=draft;
-      expect(nextNonce(ledger.state,payload.amount)===payload.nonce,409,'STATE_CHANGED','Wallet nonce changed; review again');
-      expect(now()<owner.expiresAt,403,'EXPIRED','Wallet authorization expired');
-      const tx={payload,signature:sign(wallet.privateKey,payload)};
-      let receipt;
-      try {receipt=await submit(ledger,tx);}
-      catch {throw new SendError(503,'UNCERTAIN','Confirmation unavailable. Check your balance and nonce before considering another transfer.');}
-      return {confirmed:true,chainId:pin,to:payload.to,coins:formatCoins(payload.amount),feeCoins:'0',...receipt};
+      return await exclusive(()=>sendDraft(owner,draft));
     } finally {sending=false;}
+  }
+  async function sendDraft(owner,draft) {
+    const ledger=await latest();
+    try {verifyAdvance(draft.checkpoint,ledger.checkpoint);}
+    catch {throw new SendError(409,'STATE_CHANGED','Ledger changed; prepare a new transfer');}
+    expect(hash(ledger.checkpoint.authority ?? null)===hash(draft.checkpoint.authority ?? null) &&
+      ledger.state.epoch===draft.checkpoint.state.epoch,409,'STATE_CHANGED','Ledger settings changed; review again');
+    const {payload}=draft;
+    expect(nextNonce(ledger.state,payload.amount)===payload.nonce,409,'STATE_CHANGED','Wallet nonce changed; review again');
+    expect(now()<owner.expiresAt,403,'EXPIRED','Wallet authorization expired');
+    const tx={payload,signature:sign(wallet.privateKey,payload)};
+    let receipt;
+    try {receipt=await submit(ledger,tx);}
+    catch {throw new SendError(503,'UNCERTAIN','Confirmation unavailable. Check your balance and nonce before considering another transfer.');}
+    return {confirmed:true,chainId:pin,to:payload.to,coins:formatCoins(payload.amount),feeCoins:'0',...receipt};
   }
   return {issueCode,unlock,prepare,confirm};
 }

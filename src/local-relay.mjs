@@ -19,6 +19,10 @@ export function openRelayDatabase(path) {
       sql.exec(readFileSync(new URL('../hosting/sites/drizzle/0005_relay_stream.sql', import.meta.url),'utf8'));
       sql.exec('PRAGMA user_version=2');
     }
+    if (version<3) {
+      sql.exec(readFileSync(new URL('../hosting/sites/drizzle/0006_relay_failure.sql',import.meta.url),'utf8'));
+      sql.exec('PRAGMA user_version=3');
+    }
     sql.exec('COMMIT');
     function prepare(query,args=[]) {
       const stmt=sql.prepare(query);

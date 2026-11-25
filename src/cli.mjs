@@ -2,7 +2,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { parseArgs } from 'node:util';
-import { addressFromPrivateKey, generateWallet, sign } from './crypto.mjs';
+import { generateWallet, sign } from './crypto.mjs';
+import { decodeRuntimeWallet, readRuntimeWallet, writeRuntimeWallet } from './runtime-wallet.mjs';
+import { parseWalletDocument } from './private-file.mjs';
 import { CONTEXT, createGenesis, DISTRIBUTION_RESERVE, EPOCH_TOKENS, MAINNET, mainnetPromotionPayload, replay } from './ledger.mjs';
 import { formatCoins, parseCoins } from './amount.mjs';
 import { SALE_TERMS } from './sale-policy.mjs';
@@ -13,6 +15,7 @@ import { purchaseChat } from './consumer-chat.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
 import { submitSignedTransaction } from './submit-transaction.mjs';
+import { walletSpendCoordinator } from './wallet-spend.mjs';
 import { startValidator } from './validator.mjs';
 import { enrollAt } from './validator-enroll.mjs';
 
@@ -29,6 +32,7 @@ const usage = `GPUChain
   status | verify   [--genesis FILE] [--ledger URL]
   balance  [--genesis FILE] --address ADDRESS [--ledger URL]
   transfer [--genesis FILE] --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL]
+  recover-settlement --wallet KEY [--genesis FILE] [--ledger URL]
   issue-reserve --wallet SEQUENCER_KEY [--ledger URL]  (one-time original public genesis distribution)
   promote-mainnet --wallet SEQUENCER_KEY [--ledger URL]
   authorize-sales --wallet RESERVE_KEY --authority SALE_ADDRESS --coins LIFETIME_CAP [--ledger URL]
@@ -59,6 +63,7 @@ const flags = {
   routes: ['genesis','ledger','max-output','wallet','transport'],
   balance: ['genesis','ledger','address'],
   transfer: ['genesis','ledger','wallet','to','coins'],
+  'recover-settlement':['genesis','ledger','wallet'],
   'issue-reserve': ['genesis','ledger','wallet'],
   'promote-mainnet': ['genesis','ledger','wallet'],
   chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output',
@@ -107,7 +112,6 @@ async function writeNew(file, obj) {
 
 async function walletFrom(values) {
   const file = required(values, 'wallet');
-  let w;
   if (file === '-') {
     if (process.stdin.isTTY) throw Error('Pipe the wallet JSON on standard input');
     const chunks = [];
@@ -117,12 +121,9 @@ async function walletFrom(values) {
       if (length > 8192) throw Error('Wallet JSON exceeds 8 KiB');
       chunks.push(chunk);
     }
-    w = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } else {
-    w = await readObject(file);
+    return decodeRuntimeWallet(parseWalletDocument(Buffer.concat(chunks).toString('utf8')));
   }
-  if (address(w.address) !== addressFromPrivateKey(w.privateKey)) throw Error('Wallet key mismatch');
-  return w;
+  return readRuntimeWallet(file);
 }
 
 // Check the transient sequencer acknowledgment without fetching pruned transaction history.
@@ -135,7 +136,7 @@ function nextNonce(state, from) {
   return (state.nonces[from] || 0) + 1;
 }
 
-async function chat(v, wallet, ledger, resolveLedger) {
+async function chat(v, wallet, ledger, resolveLedger,settlementDirectory) {
   if ((v.text !== undefined) === (v['text-file'] !== undefined)) throw Error('Supply one of --text and --text-file');
   const prompt = v.text ?? await readFile(v['text-file'],'utf8');
   if (!prompt.trim()) throw Error('Prompt is empty');
@@ -147,7 +148,7 @@ async function chat(v, wallet, ledger, resolveLedger) {
     maxOutputTokens:v['max-output'] === undefined ? undefined : uint(v['max-output'],'max-output',1,CONTEXT),
     reasoningEffort:v['reasoning-effort'], reasoningBudgetTokens:v['reasoning-budget-tokens'] === undefined
       ? undefined : uint(v['reasoning-budget-tokens'],'reasoning-budget-tokens',0,CONTEXT)
-  }, {ledger,resolveLedger});
+  }, {ledger,resolveLedger,settlementDirectory});
 }
 
 function print(data) { process.stdout.write(JSON.stringify(data) + '\n'); }
@@ -173,7 +174,7 @@ async function main() {
   const {values:v} = parseArgs({args,options});
   if (command === 'wallet') {
     const wallet = generateWallet();
-    await writeNew(required(v,'out'),wallet);
+    await writeRuntimeWallet(required(v,'out'),wallet);
     return print({address:wallet.address});
   }
   if (command === 'genesis') {
@@ -248,9 +249,23 @@ async function main() {
       srv.close(err => err ? reject(err) : resolve())));
   }
   const write = !['verify','status','routes','balance'].includes(command);
-  const ledger = discover ? await resolvePublicLedger({write}) :
-    {url:fixed,checkpoint:await readCheckpoint(fixed,genesis.hash)};
-  const {url:base,checkpoint} = ledger;
+  const resolveLedger=async()=>{
+    if (discover) return resolvePublicLedger({write});
+    const checkpoint=await readCheckpoint(fixed,genesis.hash);
+    return {url:fixed,checkpoint,state:checkpoint.state};
+  };
+  if (write) {
+    const wallet=await walletFrom(v);
+    const spends=walletSpendCoordinator(genesis.hash,wallet.address);
+    if (command==='recover-settlement') {
+      const receipt=await spends.run('recovery',resolveLedger);
+      return print({status:receipt?'confirmed':'no_pending_payment',...(receipt??{})});
+    }
+    return spends.run(command==='chat'?'inference':'transaction',resolveLedger,async directory=>
+      writeCommand(command,v,wallet,await resolveLedger(),resolveLedger,directory,genesis));
+  }
+  const ledger=await resolveLedger();
+  const {checkpoint} = ledger;
   const state = ledger.state = checkpoint.state;
   if (command === 'routes') {
     const maxOutputTokens = uint(v['max-output'] ?? 1,'max-output',1,state.maxOutputTokens);
@@ -271,18 +286,17 @@ async function main() {
     const addr = address(required(v,'address'));
     return print({address:addr,coins:formatCoins(state.balances[addr] ?? 0),nonce:state.nonces[addr] || 0});
   }
-  const wallet = await walletFrom(v);
+}
+
+async function writeCommand(command,v,wallet,ledger,resolveLedger,directory,genesis) {
+  const {state,checkpoint}=ledger;
   if (command==='promote-mainnet') {
     if (wallet.address!==MAINNET.issuer || genesis.hash!==MAINNET.chainId || checkpoint.authority) {
       throw Error('Promotion requires the original public chain and bootstrap signer before validator activation');
     }
     return print(await submit(ledger,mainnetPromotionPayload(state),wallet));
   }
-  if (command === 'chat') return print(await chat(v,wallet,ledger,async () => {
-    if (discover) return resolvePublicLedger({write:true});
-    const refreshed = await readCheckpoint(fixed,genesis.hash);
-    return {url:fixed,state:refreshed.state,checkpoint:refreshed};
-  }));
+  if (command === 'chat') return print(await chat(v,wallet,ledger,resolveLedger,directory));
   const common = {chainId:state.chainId,from:wallet.address,nonce:nextNonce(state,wallet.address)};
   let details;
   if (command === 'transfer') {

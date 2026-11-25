@@ -75,6 +75,8 @@ const messages = {
   "Participating": ["참여 중","参加中","参与中","Participant"],
   "Not participating": ["미참여","未参加","未参与","Non participant"],
   "Generating": ["추론 중","推論中","正在推理","Inférence en cours"],
+  "Waiting for inference settlement": ["추론 정산 대기 중","推論の精算待ち","正在等待推理结算","En attente du règlement de l’inférence"],
+  "Wallet transaction pending": ["지갑 거래 처리 중","ウォレット取引の処理中","钱包交易处理中","Transaction du portefeuille en cours"],
   "Handling a request": ["요청 처리 중","リクエスト処理中","正在处理请求","Traitement en cours"],
   "Waiting for requests": ["요청 대기","リクエスト待ち","等待请求","En attente de requêtes"],
   "Disconnected": ["미연결","未接続","未连接","Déconnecté"],

@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { chmod, link, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { CONTEXT, MODEL } from '../src/ledger.mjs';
+import { protectFile } from '../src/private-file.mjs';
 import { participantDir } from '../src/participant-config.mjs';
 import { REASONING_EFFORTS } from '../src/reasoning.mjs';
 
@@ -18,30 +19,6 @@ const missing=error=>{if(error.code!=='ENOENT') throw error;};
 async function manage(command) {
   const {stdout}=await run(process.execPath,[manager,command],{windowsHide:true,timeout:75_000});
   return JSON.parse(stdout.trim());
-}
-
-async function protectFile(path,copyAccessFrom) {
-  if (process.platform!=='win32') {
-    return chmod(path,copyAccessFrom ? (await lstat(copyAccessFrom)).mode & 0o777 : 0o600);
-  }
-  // POSIX modes do not restrict Windows ACLs. Publish an owner-only file
-  // even when the participant directory itself has an inherited group ACL.
-  const script=[
-    "$ErrorActionPreference='Stop'",
-    '$acl=New-Object Security.AccessControl.FileSecurity',
-    'if ($env:GPUCHAIN_COPY_ACCESS_FROM) {',
-    '$access=[Security.AccessControl.AccessControlSections]::Access',
-    '$source=[IO.File]::GetAccessControl($env:GPUCHAIN_COPY_ACCESS_FROM,$access)',
-    '$acl.SetSecurityDescriptorSddlForm($source.GetSecurityDescriptorSddlForm($access),$access)',
-    '} else {',
-    '$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User',
-    '$acl.SetAccessRuleProtection($true,$false)',
-    '$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,"FullControl","Allow"))',
-    '}',
-    '[IO.File]::SetAccessControl($env:GPUCHAIN_PRIVATE_FILE,$acl)',
-  ].join('\n');
-  await run('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
-    windowsHide:true,env:{...process.env,GPUCHAIN_PRIVATE_FILE:path,GPUCHAIN_COPY_ACCESS_FROM:copyAccessFrom ?? ''}});
 }
 
 async function ensureToken(path) {

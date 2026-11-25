@@ -8,6 +8,7 @@ import { createGenesis, verifyBlock, MODEL, CONTEXT } from '../src/ledger.mjs';
 import { readVerifiedState } from '../src/node.mjs';
 import worker, { createLedgerWorker } from '../hosting/sites/worker.mjs';
 import { authenticate } from '../src/checkpoint.mjs';
+import { verifyOutcome } from '../src/transaction-outcome.mjs';
 import { signEnrollment } from '../src/enrollment.mjs';
 
 // Exercise the D1 statements against SQLite. Separate asynchronous calls permit
@@ -18,13 +19,18 @@ function fixture(t, extraProviders = [], handler = worker) {
   sqlite.exec('CREATE TABLE ledger_head (id INTEGER PRIMARY KEY, tip TEXT NOT NULL, checkpoint TEXT NOT NULL)');
   const db = {
     withSession(mode) { assert.equal(mode, 'first-primary'); return this; },
+    batch(statements) {
+      sqlite.exec('BEGIN');
+      try { const rows=statements.map(s=>s.run()); sqlite.exec('COMMIT'); return rows; }
+      catch(error) { sqlite.exec('ROLLBACK'); throw error; }
+    },
     prepare(sql) {
       const statement = sqlite.prepare(sql);
       let args = [];
       return {
         bind(...values) { args = values; return this; },
         async first() { return statement.get(...args) ?? null; },
-        async run() { return {meta:{changes:statement.run(...args).changes}}; }
+        run() { return {meta:{changes:statement.run(...args).changes}}; }
       };
     }
   };
@@ -50,6 +56,9 @@ test('hosted sequencer settles once under concurrent submissions and serves a na
   assert.ok(verifyBlock(accepted.block, genesis.payload.sequencer));
   assert.equal((await submit(tx)).status, 400);
   const checkpointText = sqlite.prepare('SELECT checkpoint FROM ledger_head').get().checkpoint;
+  const outcome=await (await request('/v1/transaction-outcomes/'+hash(tx))).json();
+  assert.deepEqual(verifyOutcome(outcome,tx,JSON.parse(checkpointText)),{height:1,hash:accepted.block.hash});
+  assert.equal((await request('/v1/transaction-outcomes/'+hash('missing'))).status,404);
   for (const transient of [tx.signature, tx.providerSignature, payload.requestHash, payload.responseHash]) {
     assert.ok(!checkpointText.includes(transient));
   }

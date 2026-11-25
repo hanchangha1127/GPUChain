@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { generateWallet, sign, verify } from '../src/crypto.mjs';
+import { readRuntimeWallet, writeRuntimeWallet } from '../src/runtime-wallet.mjs';
 import { backupWallet, encryptWallet, parseWalletDocument, restoreWallet, verifyBackup } from '../src/wallet-backup.mjs';
 
 test('portable imported wallet backup reopens on disk, restores exactly its original key and cannot overwrite',async t=>{
   const dir=await mkdtemp(join(tmpdir(),'gpuchain-backup-'));t.after(()=>rm(dir,{recursive:true,force:true}));
   const source=join(dir,'src.json'),backup=join(dir,'portable.json'),restored=join(dir,'restored.json');
   const w=generateWallet(),password=randomBytes(24).toString('hex')+' 가나다';
-  await writeFile(source,JSON.stringify(w),{mode:0o600});
+  await writeRuntimeWallet(source,w);
   assert.equal((await backupWallet(source,backup,password)).address,w.address);
   const raw=await readFile(backup,'utf8'),doc=JSON.parse(raw);
   assert.ok(!raw.includes(w.privateKey));assert.equal(doc.header.origin,'imported-ed25519');assert.equal(doc.header.path,null);
@@ -19,11 +20,12 @@ test('portable imported wallet backup reopens on disk, restores exactly its orig
   await assert.rejects(verifyBackup(backup,'other password'),/Invalid password or damaged/);
   await assert.rejects(verifyBackup(backup,password,'f'.repeat(64)),/Unexpected backup address/);
   await restoreWallet(backup,restored,password,w.address);
-  const r=JSON.parse(await readFile(restored,'utf8'));
+  const r=await readRuntimeWallet(restored);
   assert.deepEqual(r,w);
   assert.ok(verify(w.address,{test:'restore'},sign(r.privateKey,{test:'restore'})));
   await assert.rejects(restoreWallet(backup,restored,password),/EEXIST/);
-  assert.deepEqual(JSON.parse(await readFile(restored,'utf8')),w);
+  assert.deepEqual(await readRuntimeWallet(restored),w);
+  if (process.platform==='win32') assert.equal((await readFile(restored,'utf8')).includes(w.privateKey),false);
   await assert.rejects(backupWallet(source,backup,password),/EEXIST/);
   assert.equal(await readFile(backup,'utf8'),raw);
 });

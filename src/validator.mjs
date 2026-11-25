@@ -12,6 +12,8 @@ import { canValidate, EPOCH_TOKENS, MAINNET, replay } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { SALE_TERMS } from './sale-policy.mjs';
 import { localRelay } from './local-relay.mjs';
+import { outcomeRoute, quorumOutcome } from './transaction-outcome.mjs';
+import { openOutcomes } from './local-outcomes.mjs';
 
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
 const MAX_TX = 16_384;
@@ -76,8 +78,10 @@ function open(dir,genesis,wallet) {
       .run(genesis.hash,wallet.address,randomUUID());
     const row = db.prepare('SELECT chain_id,address,instance,head FROM voter WHERE id=1').get();
     need(row.chain_id === genesis.hash && row.address === wallet.address,409,'Wrong validator wallet or genesis for database');
+    const outcomes=openOutcomes(db);
     return {
       checkpoint:decode(row.head),
+      findOutcome:outcomes.find,
       instanceId:row.instance,
       slot() {
         const s = db.prepare('SELECT promised, accepted FROM voter WHERE id=1').get();
@@ -98,7 +102,12 @@ function open(dir,genesis,wallet) {
           .run(encode(ballot),encode({ballot,tx}),ballot.round);
       },
       commit(checkpoint) {
-        db.prepare('UPDATE voter SET head=?,promised=NULL,accepted=NULL WHERE id=1').run(encode(checkpoint));
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          db.prepare('UPDATE voter SET head=?,promised=NULL,accepted=NULL WHERE id=1').run(encode(checkpoint));
+          if (checkpoint.consensus) outcomes.save(checkpoint.state.height,quorumOutcome(checkpoint));
+          db.exec('COMMIT');
+        } catch(error) { db.exec('ROLLBACK'); throw error; }
       },
       close() { try { db.close(); } finally { lock.close(); } }
     };
@@ -372,6 +381,10 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
       }
       if (req.method === 'GET' && path === '/v1/genesis') return send(200,genesis);
       if (req.method === 'GET' && path === '/v1/status') return send(200,status());
+      if (req.method==='GET' && outcomeRoute.test(path)) {
+        const proof=store.findOutcome(outcomeRoute.exec(path)[1]);
+        return proof?send(200,proof):send(404,{error:'Transaction outcome unavailable'});
+      }
       if (req.method === 'POST' && path === '/v1/consensus/commit') {
         const incoming = await body(req,MAX_CHECKPOINT);
         need(incoming?.authority,400,'Commit requires a validator-certified checkpoint');

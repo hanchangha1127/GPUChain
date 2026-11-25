@@ -2,6 +2,10 @@
 
 When a user gives you the GPUChain repository URL by itself, start a persistent node on the public mainnet using the steps below. If the user asks for another task, such as reviewing code, checking connectivity once, supplying inference or creating a local network, follow that request. [Project overview](README.md)
 
+## Publish improvements from the maintainer's release workstation
+
+For an authorized mainnet release, test the change, push it to GitHub, publish updated Sites code and migrations to the existing public ledger, and verify its signed checkpoint. Apply the same Git commit to the installed checkout at `%USERPROFILE%\Desktop\Node` with a fast-forward update. Restart the managed participant when current jobs have finished and verify its commit, wallet address, database identity, gateway and authenticated network stage before reporting completion. Preserve its data directory and local keys.
+
 ## Start the public verification node by default
 
 1. Use an existing GPUChain checkout or clone `https://github.com/hanchangha1127/GPUChain.git` into the user's chosen workspace and enter the repository root.
@@ -17,6 +21,8 @@ The default data directory is `~/.gpuchain/participant` and the default listener
 For an explicitly requested one-time connectivity and provider check, run `npm run join`. `node src/cli.mjs verify`, `status` and `routes` query the public network. If discovery is unavailable, the node can retry known origins or use comma-separated same-chain URLs in `GPUCHAIN_LEDGER_URLS`. Preserve the pinned network and report any outage. [Public genesis](networks/sites-testnet.json) · [Public node and operator guide](hosting/sites/README.md)
 
 The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-place promotion keeps the original genesis hash, wallet addresses, balances and transaction nonces. Existing bootstrap and genesis filenames retain `testnet` for compatibility. Check the signed network state with `node src/cli.mjs verify`: the promoted checkpoint has `networkStage` equal to `mainnet`.
+
+On Windows, an upgraded managed start converts the verified legacy participant key to current-user DPAPI with an owner-only ACL. Preserve the address and validator database. Use the portable encrypted backup for recovery under another Windows profile. The current OS user shares a per-chain, per-wallet spend lock across the GUI, CLI and OpenCode. To reconcile a pending inference without generating another completion, run `node src/cli.mjs recover-settlement --wallet WALLET_FILE`. Report any unconfirmed outcome to the owner before another inference.
 
 ## Voting on the public network
 

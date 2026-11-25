@@ -1,53 +1,18 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID, scrypt } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { link, open, unlink } from 'node:fs/promises';
+import { createCipheriv, createDecipheriv, randomBytes, scrypt } from 'node:crypto';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { readWalletDocument, writeVerifiedDocument } from './private-file.mjs';
+export { parseWalletDocument } from './private-file.mjs';
+import { readRuntimeWallet, writeRuntimeWallet } from './runtime-wallet.mjs';
 import { canonical, addressFromPrivateKey, sign, verify } from './crypto.mjs';
 
-const derive=promisify(scrypt),exec=promisify(execFile);
+const derive=promisify(scrypt);
 const prefix=Buffer.from('302e020100300506032b657004220420','hex');
-const LIMIT=4096;
 
 function must(test,reason) {if(!test)throw Error(reason);}
 function fields(obj,names) {
   must(obj && typeof obj==='object' && !Array.isArray(obj) && Object.keys(obj).length===names.length &&
     names.every(name=>Object.hasOwn(obj,name)),'Invalid wallet document fields');
-}
-export function parseWalletDocument(text) {
-  must(typeof text==='string' && Buffer.byteLength(text)<=LIMIT,'Wallet document exceeds 4 KiB');
-  let obj;
-  try {obj=JSON.parse(text);} catch {throw Error('Invalid wallet document JSON');}
-  // JSON.parse normally discards duplicate names. Reject them in each object,
-  // including equivalent escaped key spellings, before interpreting any fields.
-  const stack=[];
-  for (const token of text.matchAll(/"(?:\\.|[^"\\])*"|[{}]/g)) {
-    const word=token[0];
-    if(word==='{')stack.push(new Set());
-    else if(word==='}')stack.pop();
-    else if(/^\s*:/.test(text.slice(token.index+word.length))) {
-      const key=JSON.parse(word),seen=stack.at(-1);
-      must(seen && !seen.has(key),'Duplicate wallet document field');
-      seen.add(key);
-    }
-  }
-  return obj;
-}
-async function readDoc(file) {
-  const fd=await open(file,'r');
-  const data=Buffer.alloc(LIMIT+1);
-  try {
-    const info=await fd.stat();
-    must(info.isFile() && info.size<=LIMIT,'Expected a wallet file of at most 4 KiB');
-    let used=0;
-    while(used<data.length) {
-      const {bytesRead}=await fd.read(data,used,data.length-used,null);
-      if(!bytesRead)break;
-      used+=bytesRead;
-    }
-    must(used<=LIMIT,'Wallet document exceeds 4 KiB');
-    return parseWalletDocument(new TextDecoder('utf-8',{fatal:true}).decode(data.subarray(0,used)));
-  } finally { data.fill(0);await fd.close(); }
 }
 function checkWallet(w) {
   fields(w,['address','privateKey']);
@@ -126,42 +91,18 @@ async function unlock(doc,password,expectedAddress) {
   } finally {wrapping.fill(0);dek?.fill(0);seed?.fill(0);der?.fill(0);}
 }
 
-// Publish a synced, verified file with an exclusive hard link. A concurrent
-// operation or an existing destination cannot replace a previous good copy.
-async function writeNewVerified(path,value,verifyPath) {
-  const dest=resolve(path),temp=dest+'.'+randomUUID()+'.tmp';
-  const handle=await open(temp,'wx',0o600);
-  try {
-    try {
-      if(process.platform==='win32') {
-        const {stdout}=await exec('whoami.exe',['/user','/fo','csv','/nh'],{windowsHide:true});
-        const sid=stdout.match(/\bS-1-[0-9]+(?:-[0-9]+)+\b/i)?.[0];
-        must(sid,'Unable to identify the Windows user for file protection');
-        await exec('icacls.exe',[temp,'/inheritance:r','/grant:r','*'+sid+':(F)'],{windowsHide:true});
-      }
-      await handle.writeFile(JSON.stringify(value,null,2)+'\n');
-      await handle.sync();
-    } finally {await handle.close();}
-    await verifyPath(temp);
-    await link(temp,dest);
-  } finally {await unlink(temp);}
-}
 export async function backupWallet(source,out,password) {
-  const wallet=await readDoc(source);
+  const wallet=await readRuntimeWallet(source);
   const backup=await encryptWallet(wallet,password);
-  await writeNewVerified(out,backup,async path=>{await unlock(await readDoc(path),password,wallet.address);});
+  await writeVerifiedDocument(out,backup,async path=>{await unlock(await readWalletDocument(path),password,wallet.address);});
   return {address:wallet.address,backup:resolve(out),verified:true};
 }
 export async function verifyBackup(source,password,expectedAddress) {
-  const {address}=await unlock(await readDoc(source),password,expectedAddress);
+  const {address}=await unlock(await readWalletDocument(source),password,expectedAddress);
   return {address,verified:true};
 }
 export async function restoreWallet(source,out,password,expectedAddress) {
-  const wallet=await unlock(await readDoc(source),password,expectedAddress);
-  await writeNewVerified(out,wallet,async path=>{
-    const restored=await readDoc(path);
-    checkWallet(restored).fill(0);
-    must(restored.address===wallet.address,'Restored file has the wrong address');
-  });
+  const wallet=await unlock(await readWalletDocument(source),password,expectedAddress);
+  await writeRuntimeWallet(out,wallet);
   return {address:wallet.address,restored:resolve(out),verified:true};
 }

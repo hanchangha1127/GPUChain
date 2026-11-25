@@ -97,6 +97,10 @@ async function readBody(req) {
 
 function asGatewayError(error) {
   if (error instanceof GatewayError) return error;
+  if (error?.code==='previous_inference_recovered') return new GatewayError(409,error.code,error.message);
+  if (['settlement_pending','settlement_unconfirmed','settlement_rejected'].includes(error?.code)) {
+    return new GatewayError(409,error.code,error.message);
+  }
   if (error?.code==='self_provider_only') return new GatewayError(503,'self_provider_only',
     'This wallet is the only registered provider. Use a different funded requester wallet.');
   if (error?.code==='no_encrypted_provider') return new GatewayError(503,'no_encrypted_provider',

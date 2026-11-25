@@ -55,6 +55,10 @@ function authenticate(op,body,state,now) {
   demand(fields(body,boxed?['payload','signature','box']:['payload','signature']),400,'Invalid relay envelope');
   const p=body.payload;
   const names=['domain','chainId','issuedAt',...extra[op]];
+  if(op==='complete' && Object.hasOwn(p??{},'outcome')) {
+    demand(p.outcome==='failed',400,'Invalid completion outcome');
+    names.push('outcome');
+  }
   if(op==='presence' && Object.hasOwn(p??{},'reasoningOptions')) names.push('reasoningOptions');
   if(['presence','submit'].includes(op) && Object.hasOwn(p??{},'chatProtocol')) {
     demand(p.chatProtocol===1,400,'Unsupported chat protocol'); names.push('chatProtocol');
@@ -152,11 +156,12 @@ async function submit(db,b,p,state,now) {
   if(old){demand(old.submit_hash===digest,409,'Job ID already used');return response({jobId:p.jobId,status:old.phase});}
   const presence=await db.prepare('SELECT advert FROM relay_presence WHERE provider=? AND available=1 AND expires_ms>? AND live_key=?')
     .bind(p.provider,now,p.providerKey).first();
-  demand(presence,409,'Provider presence expired');
+  const unavailable=()=>response({error:'Provider unavailable before admission',code:'provider_not_admitted',jobId:p.jobId},409);
+  if (!presence) return unavailable();
   const offer=JSON.parse(presence.advert).payload;
-  demand(offer.maxOutputTokens>=p.maxOutputTokens &&
+  if (!(offer.maxOutputTokens>=p.maxOutputTokens &&
     (p.chatProtocol===undefined || offer.chatProtocol===1) &&
-    (!(p.reasoningEffort!==undefined || p.reasoningBudgetTokens!==undefined) || offer.reasoningOptions===1),409,'Provider capability changed');
+    (!(p.reasoningEffort!==undefined || p.reasoningBudgetTokens!==undefined) || offer.reasoningOptions===1))) return unavailable();
   const meta=JSON.stringify({payload:p,signature:b.signature});
   const [saved]=await db.batch([db.prepare(`INSERT OR IGNORE INTO relay_jobs
     (id,provider,payer,nonce,phase,expires_ms,submit_hash,request_meta,bytes)
@@ -168,6 +173,16 @@ async function submit(db,b,p,state,now) {
   ...parts(db,p.jobId,0,b.box,'submit_hash',digest)]);
   if(!saved.meta.changes){
     const concurrent=await db.prepare('SELECT submit_hash,phase FROM relay_jobs WHERE id=?').bind(p.jobId).first();
+    if (!concurrent) {
+      const owner=await db.prepare('SELECT id FROM relay_jobs WHERE payer=? AND nonce=? AND failed_no_receipt=0')
+        .bind(p.payer,p.nonce).first();
+      if (!owner) {
+        const busy=await db.prepare("SELECT id FROM relay_jobs WHERE provider=? AND phase<>'done'").bind(p.provider).first();
+        const current=await db.prepare('SELECT advert FROM relay_presence WHERE provider=? AND available=1 AND expires_ms>?')
+          .bind(p.provider,now).first();
+        if (busy || current?.advert!==presence.advert) return unavailable();
+      }
+    }
     demand(concurrent?.submit_hash===digest,409,'Provider, requester or relay is busy');
     return response({jobId:p.jobId,status:concurrent.phase});
   }
@@ -184,23 +199,24 @@ async function poll(db,p,now) {
   }
   const job=JSON.parse(row.request_meta);
   job.box=await loadBox(db,row.id,0,row.bytes,job.payload.boxHash);
-  return response({job});
+  return response({job,failureReceipt:1});
 }
 
 async function complete(db,b,p,now) {
-  const row=await db.prepare('SELECT phase,result_hash FROM relay_jobs WHERE provider=? AND id=? AND expires_ms>?')
+  const failed=Number(p.outcome==='failed');
+  const row=await db.prepare('SELECT phase,result_hash,failed_no_receipt FROM relay_jobs WHERE provider=? AND id=? AND expires_ms>?')
     .bind(p.provider,p.jobId,now).first();
   demand(row,404,'Job unavailable');
-  if(row.phase==='done'){demand(row.result_hash===p.boxHash,409,'Different result already published');return response({jobId:p.jobId,status:'done'});}
+  if(row.phase==='done'){demand(row.result_hash===p.boxHash && row.failed_no_receipt===failed,409,'Different result already published');return response({jobId:p.jobId,status:'done'});}
   const [write]=await db.batch([db.prepare(`UPDATE relay_jobs SET phase='done',expires_ms=?,request_meta=NULL,
-    reply_meta=?,result_hash=?,bytes=? WHERE id=? AND provider=? AND phase='running' AND expires_ms>?`)
-    .bind(now+DONE,JSON.stringify({payload:p,signature:b.signature}),p.boxHash,b.box.length,p.jobId,p.provider,now),
+    reply_meta=?,result_hash=?,bytes=?,failed_no_receipt=? WHERE id=? AND provider=? AND phase='running' AND expires_ms>?`)
+    .bind(now+DONE,JSON.stringify({payload:p,signature:b.signature}),p.boxHash,b.box.length,failed,p.jobId,p.provider,now),
     db.prepare(`DELETE FROM relay_chunks WHERE job_id=? AND direction=0
       AND EXISTS (SELECT 1 FROM relay_jobs WHERE id=? AND result_hash=?)`).bind(p.jobId,p.jobId,p.boxHash),
     ...parts(db,p.jobId,1,b.box,'result_hash',p.boxHash)]);
   if(!write.meta.changes){
-    const existing=await db.prepare('SELECT result_hash FROM relay_jobs WHERE id=?').bind(p.jobId).first();
-    demand(existing?.result_hash===p.boxHash,409,'Job expired or not claimed');
+    const existing=await db.prepare('SELECT result_hash,failed_no_receipt FROM relay_jobs WHERE id=?').bind(p.jobId).first();
+    demand(existing?.result_hash===p.boxHash && existing.failed_no_receipt===failed,409,'Job expired or not claimed');
   }
   return response({jobId:p.jobId,status:'done'});
 }

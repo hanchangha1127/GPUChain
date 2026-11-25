@@ -4,6 +4,7 @@ import test from 'node:test';
 import { generateWallet, hash, sign } from '../src/crypto.mjs';
 import { authenticate, nextCheckpoint, verifyAdvance } from '../src/checkpoint.mjs';
 import { createGenesis, replay } from '../src/ledger.mjs';
+import { quorumOutcome, verifyOutcome } from '../src/transaction-outcome.mjs';
 import { activateCheckpoint, certify, consensusCandidate, createActivation, verifyConsensusAck, votePayload } from '../src/consensus.mjs';
 
 function fixture() {
@@ -35,6 +36,10 @@ test('majority certificate authenticates a deterministic transfer and preserves 
   assert.equal(checkpoint.state.balances[keys[0].address],8);
   assert.equal(checkpoint.state.nonces[tx.payload.from],2);
   assert.equal(verifyConsensusAck({block,checkpoint},tx,genesis,activation),true);
+  const outcome=quorumOutcome(checkpoint);
+  assert.deepEqual(verifyOutcome(outcome,tx,checkpoint),{height:2,hash:checkpoint.state.tip});
+  assert.throws(()=>verifyOutcome({...outcome,votes:[votes[0],votes[0]]},tx,checkpoint),/vote/);
+  assert.throws(()=>verifyOutcome(outcome,transfer(3),checkpoint),/Wrong transaction/);
   const other = certify(next,activation,ballot,votes.slice(1));
   assert.equal(verifyAdvance(checkpoint,other),other);
   assert.ok(!JSON.stringify(checkpoint).includes(tx.signature));

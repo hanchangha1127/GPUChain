@@ -107,16 +107,35 @@ export function verifyConsensusCheckpoint(head,chainId) {
   check(head.signature === null && fields(proof,['previousHash','txHash','ballot','votes']),
     'Invalid quorum checkpoint');
   const payload = votePayload(head,head.authority,proof.ballot);
-  check(Array.isArray(proof.votes) && proof.votes.length >= 2 && proof.votes.length <= 3,
-    'Two validator votes are required');
-  const voters = new Set();
-  for (const vote of proof.votes) {
-    check(fields(vote,['address','signature']) && !voters.has(vote.address) &&
-      p.validators.some(member=>member.address === vote.address) &&
-      verify(vote.address,payload,vote.signature),'Invalid or duplicate quorum vote');
-    voters.add(vote.address);
-  }
+  verifyQuorumVotes(payload,proof.votes,p.validators);
   return head;
+}
+
+function verifyQuorumVotes(payload,votes,validators) {
+  check(Array.isArray(votes) && votes.length>=2 && votes.length<=3,'Two validator votes are required');
+  const seen=new Set();
+  for (const vote of votes) {
+    check(fields(vote,['address','signature']) && !seen.has(vote.address) &&
+      validators.some(member=>member.address===vote.address) && verify(vote.address,payload,vote.signature),
+    'Invalid or duplicate quorum vote');
+    seen.add(vote.address);
+  }
+}
+
+// Validate the original majority signatures without retaining the historical
+// state snapshot. The caller supplies an already authenticated authority.
+export function verifyCompactVote(payload,votes,authority,txHash) {
+  const committee=authority?.payload;
+  check(committee && fields(payload,['domain','chainId','authorityHash','ballot','height','previousHash',
+    'txHash','tip','stateHash','epochsHash']) && payload.domain===VOTE && payload.chainId===committee.chainId &&
+    payload.authorityHash===hash(authority) && payload.txHash===txHash && hexHash(payload.previousHash) &&
+    fields(payload.ballot,['round','proposer']) && Number.isSafeInteger(payload.ballot.round) && payload.ballot.round>0 &&
+    committee.validators.some(v=>v.address===payload.ballot.proposer) &&
+    hexHash(payload.stateHash) && hexHash(payload.epochsHash) && Number.isSafeInteger(payload.height) &&
+    payload.height>committee.anchorHeight && (payload.height!==committee.anchorHeight+1 || payload.previousHash===committee.anchorTip) &&
+    payload.tip===blockTip(payload.chainId,payload.authorityHash,payload.height,payload.previousHash,txHash),
+  'Invalid transaction outcome commitment');
+  verifyQuorumVotes(payload,votes,committee.validators);
 }
 
 export function certify(next,activation,ballot,votes) {

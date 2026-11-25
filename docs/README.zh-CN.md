@@ -12,6 +12,8 @@ GPUChain 公开主网 `gpuchain-mainnet-1` 目前以小规模试点方式运行�
 
 界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。公开商店的售价为 1 USDT 购买 10 枚代币。付款前先登记 GPUChain 收款地址。[购买说明](usdt-sales.md) · [备份与恢复](wallet-backup.md)
 
+Windows 节点在升级后首次启动时，会使用当前用户的 DPAPI 保护现有参与者私钥。在其他电脑上恢复钱包需要密码加密的备份。要单独核对或完成待结算的支付，可运行 `node src/cli.mjs recover-settlement --wallet 钱包文件路径`，无需重新生成回答。
+
 ## 从另一台电脑的 OpenCode 请求推理
 
 在**使用推理的电脑**上安装 Node.js 24 或更高版本和 OpenCode 2.x，然后在 GPUChain 仓库中运行 `npm run opencode:setup`。重新打开 OpenCode，在 `/models` 中选择 `gpuchain/qwen3.8-flash-next`。默认连接地址为请求方本机的 `http://127.0.0.1:8792/v1`。请在本机保管 `opencode.token`，持有者可以用参与节点的钱包支付推理请求。

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { startLocal } from '../scripts/bootstrap.mjs';
 import { generateWallet, sign } from '../src/crypto.mjs';
+import { readRuntimeWallet } from '../src/runtime-wallet.mjs';
 import { NANOCOINS } from '../src/ledger.mjs';
 import { readVerifiedState } from '../src/node.mjs';
 
@@ -83,7 +84,7 @@ test('bootstrap endpoint registration is idempotent and preserves operator chang
     app = await startLocal(config);
     const {providerAddress, providerUrl, chainId} = app.info;
     config.providerPort = Number(new URL(providerUrl).port);
-    const wallet = JSON.parse(await readFile(join(dir, 'sequencer.json'), 'utf8'));
+    const wallet = await readRuntimeWallet(join(dir, 'sequencer.json'));
     const read = () => readVerifiedState(app.info.ledgerUrl, chainId);
     let state = await read();
     const height = state.height;

@@ -60,7 +60,7 @@ function sampler(origin) {
   };
 }
 
-function overview({status, checkpoint, relay}, sampled) {
+function overview({status, checkpoint, relay, spendActivity}, sampled) {
   if (!hex64(status?.address) || !hex64(status.chainId)) throw Error('Invalid node identity');
   const state = checkpoint?.state;
   if (Boolean(state) !== status.verified || (state && (state.chainId !== status.chainId ||
@@ -95,7 +95,8 @@ function overview({status, checkpoint, relay}, sampled) {
   return {
     sampledAt:new Date().toISOString(),
     relay:relay ? {mode:relay.mode,reachableRelays:relay.reachableRelays,backendUrl:ledgerOrigin(relay.backendUrl)} : null,
-    wallet:{address,balanceNanocoins:balance,nonce},
+    wallet:{address,balanceNanocoins:balance,nonce,
+      ...(['inference','transaction'].includes(spendActivity)?{spendActivity}:{})},
     node:{
       mode:status.mode, verified:status.verified, voting:status.voting, instanceId:status.instanceId,
       lastVerifiedAt:status.lastVerifiedAt ?? null, ledgerUrl:ledgerOrigin(status.ledgerUrl),

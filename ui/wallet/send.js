@@ -22,6 +22,8 @@ const phrases = {
   'Edit':['수정','編集','修改','Modifier'],
   'Close':['닫기','閉じる','关闭','Fermer'],
   'Checking…':['확인 중…','確認中…','核对中…','Vérification…'],
+  'A wallet operation is pending. Try again once it settles.':['지갑 거래가 진행 중입니다. 정산 후 다시 시도하세요.','ウォレットの処理中です。精算後に再試行してください。','钱包操作正在进行，请在结算后重试。','Une opération est en cours. Réessayez après son règlement.'],
+  'Resolve the previous inference payment before sending coins.':['이전 추론 결제의 결과를 확인한 뒤 송금하세요.','前回の推論の支払い状況を確認してから送金してください。','请先核对上一笔推理支付，再转账。','Vérifiez le règlement de la dernière inférence avant le virement.'],
   'Waiting for ledger confirmation…':['원장 확정을 기다리는 중…','台帳の確定を待っています…','等待账本确认…','Confirmation du registre en cours…'],
   'Transfer confirmed':['송금 확정됨','送金が確定しました','转账已确认','Virement confirmé'],
   'Transaction hash':['거래 해시','取引ハッシュ','交易哈希','Empreinte de transaction'],
@@ -39,6 +41,10 @@ const phrases = {
 };
 const tr=label=>phrases[label]?.[languages.indexOf(document.documentElement.lang)] ?? label;
 const translations={
+  WALLET_BUSY:'A wallet operation is pending. Try again once it settles.',
+  settlement_pending:'Resolve the previous inference payment before sending coins.',
+  settlement_unconfirmed:'Resolve the previous inference payment before sending coins.',
+  settlement_rejected:'Resolve the previous inference payment before sending coins.',
   INVALID_CODE:'The code is invalid or has expired.', AUTH_REQUIRED:'Unlock the wallet again.',
   RATE_LIMITED:'Too many attempts. Try later.', INSUFFICIENT_FUNDS:'Insufficient verified balance.',
   INVALID_INPUT:'Enter a valid 64-character recipient and a positive amount with up to nine decimal places.',
@@ -177,7 +183,8 @@ el('send-next').addEventListener('click',async()=>{
     if(e.code==='AUTH_REQUIRED'||previous==='unlock') {csrf='';step='unlock';}
     else if(previous==='review') {
       csrf='';
-      if(e.code==='STATE_CHANGED'||e.code==='EXPIRED'||e.code==='INSUFFICIENT_FUNDS'||e.code==='INVALID_INPUT') {
+      if(['WALLET_BUSY','settlement_pending','settlement_unconfirmed','settlement_rejected',
+        'STATE_CHANGED','EXPIRED','INSUFFICIENT_FUNDS','INVALID_INPUT'].includes(e.code)) {
         step='unlock';draft=null;
       } else {step='uncertain';feedback=terminalFailure;}
     }

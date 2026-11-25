@@ -30,12 +30,15 @@ export async function requestJsonResponse(value, {method, headers, body, timeout
   });
   if (res.statusCode >= 200 && res.statusCode < 300) return res;
   const raw = await responseText(res,Math.min(maxBytes,65536));
-  let reason = res.statusMessage;
+  let reason = res.statusMessage, admissionJob;
   try {
-    const error = JSON.parse(raw)?.error;
+    const reply=JSON.parse(raw);
+    const error = reply?.error;
     if (typeof error === 'string') reason = error;
+    if (res.statusCode===409 && reply?.code==='provider_not_admitted' &&
+        typeof reply.jobId==='string' && /^[a-f0-9]{64}$/.test(reply.jobId)) admissionJob=reply.jobId;
   } catch { /* Error bodies can be plain text. */ }
-  throw Object.assign(Error(`HTTP ${res.statusCode}: ${reason}`),{status:res.statusCode});
+  throw Object.assign(Error(`HTTP ${res.statusCode}: ${reason}`),{status:res.statusCode,...(admissionJob ? {admissionJob} : {})});
 }
 
 async function responseText(res,maxBytes) {

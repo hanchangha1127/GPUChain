@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { requestJson } from '../src/http.mjs';
 import { participantDir } from '../src/participant-config.mjs';
+import { protectFile } from '../src/private-file.mjs';
 
 const directory = participantDir();
 const descriptor = join(directory,'process.json');
@@ -151,7 +152,9 @@ async function daemon() {
   try {
     server.listen(0,'127.0.0.1');
     await once(server,'listening');
-    writeFileSync(temp,JSON.stringify({pid:process.pid,port:server.address().port,key}),{flag:'wx',mode:0o600});
+    writeFileSync(temp,'',{flag:'wx',mode:0o600});
+    await protectFile(temp);
+    writeFileSync(temp,JSON.stringify({pid:process.pid,port:server.address().port,key}));
     renameSync(temp,descriptor);
     published = true;
     process.once('SIGINT',()=>stop().catch(()=>{process.exitCode=1;}));

@@ -439,6 +439,13 @@ export function createBlock(state, tx, wallet) {
   return signedBlock(integer(state.height + 1, 'height'), state.tip, tx, wallet);
 }
 
+// Used by the buyer to distinguish a rejected receipt from a failed HTTP
+// acknowledgement against an authenticated head. Applies no persistent write.
+export function validateInferenceSpend(state,tx) {
+  requireValue(tx?.payload?.type==='inference','Expected a signed inference receipt');
+  transition(state,tx);
+}
+
 export function applyBlock(state, block) {
   checkBlock(block, integer(state.height + 1, 'height'), state.tip, state.sequencer);
   return immutable({...transition(state, block.payload), height: block.height, tip: block.hash});

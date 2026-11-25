@@ -20,7 +20,8 @@ test('CLI settles a Strata completion, transfers credits, verifies a follower an
   const model = 'qwen3.8-flash-next-q2_0';
   let requests = 0;
   const run = async (...args) => {
-    const {stdout} = await exec(process.execPath,[cli,...args],{cwd:dir,windowsHide:true,timeout:10_000});
+    const {stdout} = await exec(process.execPath,[cli,...args],{cwd:dir,windowsHide:true,timeout:15_000,
+      env:{...process.env,USERPROFILE:dir,HOME:dir}});
     return JSON.parse(stdout);
   };
   async function startProcess(...args) {

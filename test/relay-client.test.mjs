@@ -66,6 +66,7 @@ test('buyer and provider use real signed relay mailbox, chunk large prompts, and
   const db=new DatabaseSync(':memory:');
   db.exec(await readFile(new URL('../hosting/sites/drizzle/0004_relay_mailbox.sql',import.meta.url),'utf8'));
   db.exec(await readFile(new URL('../hosting/sites/drizzle/0005_relay_stream.sql',import.meta.url),'utf8'));
+  db.exec(await readFile(new URL('../hosting/sites/drizzle/0006_relay_failure.sql',import.meta.url),'utf8'));
   const adapter=sqliteAdapter(db);
   const provider=generateWallet(),payer=generateWallet();
   const chainId=hash('relay network');
@@ -75,7 +76,7 @@ test('buyer and provider use real signed relay mailbox, chunk large prompts, and
   const messages=[{role:'user',content:'RELAY_PRIVATE_PROMPT_'+'😀'.repeat(220000)}];
   const message={role:'assistant',content:'RELAY_PRIVATE_ANSWER',reasoning_content:'RELAY_PRIVATE_REASONING'};
   const observed=[], local=[];
-  let completeAttempts=0, tamperResult=false, omitReasoning=false;
+  let completeAttempts=0, tamperResult=false, omitReasoning=false, rejectInference=false;
   const relayUrl=await httpServer(t,async(req,body)=>{
     observed.push(body);
     const routed=await relayRoute(new Request('https://relay.invalid'+req.url,
@@ -102,6 +103,7 @@ test('buyer and provider use real signed relay mailbox, chunk large prompts, and
     }
     assert.equal(req.url,'/v1/infer');
     const input=JSON.parse(body);local.push(input);
+    if (rejectInference) return Response.json({error:'Backend unavailable'},{status:503});
     const payload={type:'inference',chainId,from:payer.address,provider:provider.address,
       nonce:input.request.nonce,model:MODEL,contextWindow:CONTEXT,requestHash:hash(input.request),
       responseHash:hash(message),inputTokens:18,cachedTokens:6,outputTokens:9,kvCache:profile.kvCache};
@@ -137,6 +139,13 @@ test('buyer and provider use real signed relay mailbox, chunk large prompts, and
     tamperResult=true;
     await assert.rejects(()=>buy(2), /Invalid signed relay completion/);
     assert.equal(local.length,2);
+    tamperResult=false;
+    state.nonces[payer.address]=2;
+    rejectInference=true;
+    await assert.rejects(()=>buy(3),/ADAPTER_HTTP_503/);
+    rejectInference=false;
+    assert.deepEqual((await buy(3)).message,message);
+    assert.equal(local.length,4);
     await assert.rejects(()=>getRelayOffer(relayUrl,chainId,generateWallet().address),/No fresh/);
   } finally {
     await pump.close();
@@ -147,7 +156,7 @@ test('buyer and provider use real signed relay mailbox, chunk large prompts, and
 
 test('encrypted live relay sends deltas before receipt, retries identical frames, rejects truncation and tampering', {timeout:15_000},async t=>{
   const db=new DatabaseSync(':memory:');
-  for (const name of ['0004_relay_mailbox','0005_relay_stream']) {
+  for (const name of ['0004_relay_mailbox','0005_relay_stream','0006_relay_failure']) {
     db.exec(await readFile(new URL('../hosting/sites/drizzle/'+name+'.sql',import.meta.url),'utf8'));
   }
   const adapter=sqliteAdapter(db);

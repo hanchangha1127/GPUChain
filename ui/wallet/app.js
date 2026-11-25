@@ -56,6 +56,8 @@ function render(data) {
   show('address',wallet.address);
   el('copy').disabled = !wallet.address;
   show('nonce',count(wallet.nonce));
+  el('spend-activity').hidden=!wallet.spendActivity;
+  show('spend-activity',wallet.spendActivity==='inference' ? 'Waiting for inference settlement' : 'Wallet transaction pending');
 
   badge('node-badge',node.syncError ? "Sync delayed" : node.verified ? "Verified" : "Awaiting verification",node.syncError ? 'warn' : node.verified ? 'ok' : 'neutral');
   show('node-mode',roles[node.mode] ?? "Unavailable");

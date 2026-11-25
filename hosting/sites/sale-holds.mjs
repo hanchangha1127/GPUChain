@@ -1,6 +1,11 @@
 import { decodeAmount } from '../../src/amount.mjs';
 import { DISTRIBUTION_RESERVE as reserve } from '../../src/ledger.mjs';
 import { SALE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
+import { OUTCOME_SLOTS } from '../../src/transaction-outcome.mjs';
+
+// ledger_head also holds singleton operational rows (1–4). This disjoint
+// bounded range contains compact proofs tied to the same atomic head write.
+export const OUTCOME_ROW_BASE=10000;
 
 export const openOrders = "state IN ('holding','reserved','paid','releasing')";
 const clockMs = "(CAST(strftime('%s','now') AS INTEGER)*1000)";
@@ -47,10 +52,13 @@ export function writerBudgetGuard(state,next,type) {
     args:[ceiling.toString(),...holdArgs(next.lastSale?.sequence ?? 0,next.lastSale?.paymentId)]};
 }
 
-export async function commitHostedTransaction(db,prior,next,encoded,type) {
+export async function commitHostedTransaction(db,prior,next,encoded,type,proof) {
   const guard=writerBudgetGuard(prior,next,type);
-  const result=await db.prepare('UPDATE ledger_head SET tip=?,checkpoint=? WHERE id=1 AND tip=?'+(guard?.sql ?? ''))
-    .bind(next.tip,encoded,prior.tip,...(guard?.args ?? [])).run();
+  const update=db.prepare('UPDATE ledger_head SET tip=?,checkpoint=? WHERE id=1 AND tip=?'+(guard?.sql ?? ''))
+    .bind(next.tip,encoded,prior.tip,...(guard?.args ?? []));
+  const result=proof ? (await db.batch([update,db.prepare(
+    'INSERT OR REPLACE INTO ledger_head(id,tip,checkpoint) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM ledger_head WHERE id=1 AND tip=?)')
+    .bind(OUTCOME_ROW_BASE+next.height%OUTCOME_SLOTS,proof.txHash,JSON.stringify(proof),next.tip)]))[0] : await update.run();
   if(result.meta.changes!==1)throw Object.assign(Error(guard?'Ledger moved or this spend would consume reserved orders':
     'Ledger advanced concurrently; retry with current state'),{status:409});
 }

@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { mkdtemp,readFile,rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { openRelayDatabase } from '../src/local-relay.mjs';
 import { purgeExpiredRelay, relayRoute } from '../src/relay-service.mjs';
 import { generateWallet, hash, sign } from '../src/crypto.mjs';
@@ -33,7 +37,7 @@ function fixture(t) {
   }
   const read=(wallet=payer)=>envelope('result',wallet,{payer:wallet.address,jobId,salt:salt()});
   const poll=()=>envelope('poll',provider,{provider:provider.address,salt:salt()});
-  const finish=box=>envelope('complete',provider,{provider:provider.address,jobId,salt:salt()},box);
+  const finish=(box,extra={})=>envelope('complete',provider,{provider:provider.address,jobId,salt:salt(),...extra},box);
   return {db,payer,provider,stranger,state,advertise,makeJob,call,read,poll,finish,key,
     advance:n=>now+=n,time:()=>now};
 }
@@ -96,4 +100,59 @@ test('relay enforces capability, balance, signature, nonce, expiry and provider 
   f.advance(61_000);
   assert.equal((await f.call('result',f.read()))[0],404);
   assert.deepEqual((await f.call('providers'))[1].providers,[]);
+});
+
+test('only a signed terminal failure releases its nonce; replays keep their original outcome',async t=>{
+  const f=fixture(t),box=randomBytes(96).toString('base64url');
+  await f.call('presence',f.advertise());
+  const first=f.makeJob(box);
+  assert.equal((await f.call('submit',first))[0],201);
+  const competing=f.makeJob(box,{payer:f.stranger.address,jobId:hash('concurrent buyer')});
+  f.state.balances[f.stranger.address]=1_000_000;
+  competing.signature=sign(f.stranger.privateKey,competing.payload);
+  const [busy,reason]=await f.call('submit',competing);
+  assert.equal(busy,409);
+  assert.equal(reason.code,'provider_not_admitted');
+  assert.equal(reason.jobId,competing.payload.jobId);
+  const replacement=f.makeJob(box,{jobId:hash('corrected')});
+  assert.equal((await f.call('submit',replacement))[1].code,undefined);
+  assert.equal((await f.call('poll',f.poll()))[1].failureReceipt,1);
+  const failure=f.finish(box,{outcome:'failed'});
+  assert.equal((await f.call('complete',{...failure,signature:sign(f.payer.privateKey,failure.payload)}))[0],403);
+  assert.equal((await f.call('submit',replacement))[0],409);
+  assert.equal((await f.call('complete',failure))[0],200);
+  assert.equal((await f.call('complete',f.finish(box)))[0],409);
+  assert.equal((await f.call('complete',failure))[0],200);
+  assert.equal((await f.call('submit',first))[1].status,'done');
+  assert.equal((await f.call('submit',replacement))[0],201);
+  assert.equal((await f.call('result',f.read()))[1].reply.payload.outcome,'failed');
+  await f.call('poll',f.poll());
+  const replacementMeta={jobId:replacement.payload.jobId};
+  assert.equal((await f.call('complete',f.finish(box,replacementMeta)))[0],200);
+  assert.equal((await f.call('complete',f.finish(box,{...replacementMeta,outcome:'failed'})))[0],409);
+  assert.equal((await f.call('submit',f.makeJob(box,{jobId:hash('third')})))[0],409);
+});
+
+test('upgrading an existing relay preserves the nonce protection of a legacy completed row',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'gpuchain-relay-upgrade-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const file=join(dir,'relay.sqlite');
+  const legacy=new DatabaseSync(file);
+  try {
+    for (const name of ['0004_relay_mailbox','0005_relay_stream']) {
+      legacy.exec(await readFile(new URL('../hosting/sites/drizzle/'+name+'.sql',import.meta.url),'utf8'));
+    }
+    legacy.exec(`PRAGMA user_version=2;
+      INSERT INTO relay_jobs(id,provider,payer,nonce,phase,expires_ms,submit_hash,bytes)
+        VALUES('existing','p','buyer',1,'done',1234,'hash',0)`);
+  } finally { legacy.close(); }
+  for (let i=0;i<2;i++) {
+    const db=openRelayDatabase(file);
+    try {
+      assert.equal(db.prepare('PRAGMA user_version').first().user_version,3);
+      assert.equal(db.prepare("SELECT failed_no_receipt FROM relay_jobs WHERE id='existing'").first().failed_no_receipt,0);
+      assert.throws(()=>db.prepare(`INSERT INTO relay_jobs(id,provider,payer,nonce,phase,expires_ms,submit_hash,bytes)
+        VALUES('next','p','buyer',1,'queued',1235,'next hash',0)`).run(),/UNIQUE/);
+    } finally { db.close(); }
+  }
 });

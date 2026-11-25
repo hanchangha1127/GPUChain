@@ -6,7 +6,8 @@ import { DIRECTORY_URL, directoryOrigins } from '../../src/peer-directory.mjs';
 import { checkoutPage, checkoutScript } from './checkout.mjs';
 import { ledgerPage, ledgerScript } from './ledger-page.mjs';
 import { salesRoute } from './sales.mjs';
-import { commitHostedTransaction, prepareSalesRetirement, retirementGuard } from './sale-holds.mjs';
+import { commitHostedTransaction, prepareSalesRetirement, retirementGuard, OUTCOME_ROW_BASE } from './sale-holds.mjs';
+import { OUTCOME_SLOTS, outcomeRoute, sequencerOutcome } from '../../src/transaction-outcome.mjs';
 import { canValidate, EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
 import { relayRoute, purgeExpiredRelay } from '../../src/relay-service.mjs';
 
@@ -150,6 +151,12 @@ async function dispatch(request, env, options) {
     // Already queued work can finish on its original host during a ledger handover.
     return relayRoute(request,db,state);
   }
+  if (request.method==='GET' && outcomeRoute.test(path)) {
+    const row=await env.DB.withSession('first-primary').prepare(
+      'SELECT checkpoint FROM ledger_head WHERE id>=? AND id<? AND tip=?')
+      .bind(OUTCOME_ROW_BASE,OUTCOME_ROW_BASE+OUTCOME_SLOTS,outcomeRoute.exec(path)[1]).first();
+    return row?json(JSON.parse(row.checkpoint)):json({error:'Transaction outcome unavailable'},404);
+  }
   const isWrite = request.method === 'POST' && ['/v1/transactions','/v1/consensus/enroll'].includes(path);
   const isRead = request.method === 'GET' &&
     ['/ledger', '/v1/status', '/v1/genesis', '/v1/checkpoint','/v1/consensus/candidates'].includes(path);
@@ -184,7 +191,8 @@ async function dispatch(request, env, options) {
   if (new TextEncoder().encode(checkpoint).length > MAX_HEAD_BYTES) {
     throw new HttpError(507, 'Checkpoint exceeds the capacity of this hosted node');
   }
-  try {await commitHostedTransaction(db,head.state,next.state,checkpoint,tx.payload.type);}
+  try {await commitHostedTransaction(db,head.state,next.state,checkpoint,tx.payload.type,
+    tx.payload.type==='inference'?sequencerOutcome(block):undefined);}
   catch(err){if(err.status===409)throw new HttpError(409,err.message);throw err;}
   return json({block}, 201);
 }

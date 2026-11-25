@@ -12,6 +12,8 @@ Utilisez `npm run status` pour consulter la hauteur vérifiée et le statut de v
 
 Le portefeuille s’ouvre en anglais et propose cinq langues, dont le français. Utilisez `GPUChain Backup.cmd` pour créer une sauvegarde chiffrée et conservez le mot de passe de restauration séparément. La boutique publique vend 10 coins pour 1 USDT. Enregistrez l’adresse de réception GPUChain avant le paiement. [Guide d’achat](usdt-sales.md) · [Sauvegarde et restauration](wallet-backup.md)
 
+Le premier démarrage après la mise à jour protège la clé existante du participant Windows avec DPAPI pour le compte courant. Gardez une sauvegarde chiffrée par mot de passe pour la restauration sur un autre ordinateur. Utilisez `node src/cli.mjs recover-settlement --wallet FICHIER` pour vérifier ou terminer un paiement en attente sans relancer l’inférence.
+
 ## Utiliser OpenCode depuis un autre ordinateur
 
 Sur l’ordinateur qui demande l’inférence, installez Node.js 24 ou ultérieur et OpenCode 2.x, puis exécutez `npm run opencode:setup` dans le dépôt GPUChain. Rouvrez OpenCode et sélectionnez `gpuchain/qwen3.8-flash-next` avec `/models`. L’adresse de base est généralement `http://127.0.0.1:8792/v1` sur cet ordinateur. Conservez le fichier `opencode.token` sur place. Il autorise les requêtes payantes depuis le portefeuille du participant.

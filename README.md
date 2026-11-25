@@ -14,6 +14,8 @@ Run `npm run status` to see the local node's verified height and voting status. 
 
 The wallet opens in English and offers Korean, Japanese, Simplified Chinese and French. On Windows, open **GPUChain Backup.cmd** to save an encrypted copy of the local signing key. Restore requires that file and its password. A voting node also needs its original, current database to retain its certified voting identity. [Backup and recovery](docs/wallet-backup.md)
 
+On Windows, the managed node protects its signing key with the current user's DPAPI credentials and an owner-only file ACL. The first upgraded start verifies and converts a legacy participant wallet at the same address. Use a password-encrypted portable backup to move the key to a new Windows profile or computer. [Wallet backup](docs/wallet-backup.md)
+
 ## Use paid inference from another computer
 
 On the **requesting computer**, install Node.js 24 or later and OpenCode 2.x, enter the GPUChain checkout, then run:
@@ -25,6 +27,10 @@ npm run opencode:setup
 Reopen OpenCode and select `gpuchain/qwen3.8-flash-next` in `/models`. The installer starts or reuses the participant and registers its loopback OpenAI-compatible base URL, normally `http://127.0.0.1:8792/v1`. OpenCode reads its inference token from a private local file. The token authorizes paid inference from the participant wallet. Keep it on that computer. The current default model stays selected until you choose GPUChain. The setup targets the OpenCode 2.x provider schema. If your config uses JSONC comments, generate the provider entry with `npm run opencode:setup -- --config NEW_FILE.json` and copy `providers.gpuchain` into your settings. [OpenCode configuration](https://opencode.ai/docs/config/)
 
 Fund this participant's public address and use another registered provider. The gateway streams text, reasoning and tool calls while the engine generates them and delivers the final usage after settlement. Later turns prefer the provider for the same session or the longest compatible conversation prefix. When that provider is temporarily unavailable, the gateway checks again for up to 1.5 seconds before selecting another. It remembers up to 256 keyed routing records for 60 minutes after their last successful settlement, including across a gateway restart. The engine manages actual KV eviction. The discount uses the engine's measured `usage.prompt_tokens_details.cached_tokens`.
+
+OpenCode, the wallet dashboard and the CLI serialize spending for the same wallet and chain under one OS user. The dashboard displays pending inference settlement. If a payment acknowledgement is lost, GPUChain reconciles the original signed transaction against the verified ledger before the next spend. To recover just the payment, run `node src/cli.mjs recover-settlement --wallet WALLET_FILE`. The requester keeps one pending signed transaction locally. Nodes retain up to 256 compact outcome proofs. If a nonce was consumed and its proof is unavailable, the client reports an unconfirmed outcome.
+
+New conversations are distributed across equivalent relay offers. One alternative may be selected when the relay explicitly rejects the initial submission before admission. A definitive provider-signed failure releases the pending wallet nonce on an upgraded relay. Uncertain jobs keep their existing duplicate protection.
 
 **Choose reasoning effort.** In the OpenCode 2.4.1 terminal UI, select GPUChain in `/models`, then press **Ctrl+T** (Cycle model variants) to choose `none`, `low`, `medium` or `high`. For one CLI run:
 

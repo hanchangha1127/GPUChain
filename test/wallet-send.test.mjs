@@ -8,8 +8,12 @@ import { createWalletSender } from '../src/wallet-send.mjs';
 import { startWalletUi } from '../src/wallet-ui.mjs';
 import { requestJson } from '../src/http.mjs';
 import { submitSignedTransaction } from '../src/submit-transaction.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { walletSpendCoordinator } from '../src/wallet-spend.mjs';
 
-function fixture() {
+function fixture(spendRoot) {
   const seq=generateWallet(), wallet=generateWallet(), recipient=generateWallet();
   const genesis=createGenesis(seq,{allocations:{[wallet.address]:100},providers:[]});
   let head={genesis,state:replay([genesis]),epochHashes:[],signature:null}, now=100_000, posts=0, dropped=false;
@@ -27,8 +31,9 @@ function fixture() {
       return {block};
     });
   }
-  const sender=createWalletSender({wallet,pin:genesis.hash,resolveLedger:read,submit,now:()=>now});
-  return {wallet,seq,recipient,sender,genesis,read,getHead:()=>head,getPosts:()=>posts,
+  const spends=spendRoot && walletSpendCoordinator(genesis.hash,wallet.address,{root:spendRoot});
+  const sender=createWalletSender({wallet,pin:genesis.hash,spends,resolveLedger:read,submit,now:()=>now});
+  return {wallet,seq,recipient,sender,spends,genesis,read,getHead:()=>head,getPosts:()=>posts,
     drop:()=>{dropped=true;},advance:ms=>{now+=ms;},
     otherSpend:()=>{
       const payload={type:'transfer',chainId:genesis.hash,from:wallet.address,to:recipient.address,amount:1,nonce:1};
@@ -40,6 +45,25 @@ function pair(sender,origin='http://127.0.0.1:1234') {
   const {code}=sender.issueCode();
   return {...sender.unlock({code},origin),origin};
 }
+
+test('wallet transfer preparation waits for another spend and reviews the fresh nonce',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'gpuchain-gui-spend-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const f=fixture(root),auth=pair(f.sender),started=Promise.withResolvers(),finish=Promise.withResolvers();
+  const inference=f.spends.run('inference',f.read,async()=>{
+    started.resolve();
+    await finish.promise;
+    f.otherSpend();
+  });
+  await started.promise;
+  const draft=f.sender.prepare({to:f.recipient.address,coins:'0.000000001'},auth);
+  try { assert.equal(f.spends.activity(),'inference'); } finally { finish.resolve(); }
+  await inference;
+  const reviewed=await draft;
+  assert.equal(reviewed.nonce,2);
+  assert.ok((await f.sender.confirm({draftId:reviewed.draftId},auth)).confirmed);
+  assert.equal(f.getHead().state.nonces[f.wallet.address],2);
+});
 
 test('a local confirmation signs only the reviewed exact transfer and consumes its unlock exactly once',async()=>{
   const f=fixture(), auth=pair(f.sender);

@@ -168,3 +168,53 @@ test('encrypted discovery briefly waits for the previous provider before sending
   const clear=openRelayBox(keys.privateKey,submit.payload.clientKey,submit.payload,'request',submit.box);
   assert.equal(clear.messages[0].content,prompt);
 });
+
+test('relay fallback requires an explicit rejection of the first submission for that exact job',async t=>{
+  const warm=generateWallet(),cold=generateWallet(),payer=generateWallet();
+  const keys=new Map([warm,cold].map(p=>[p.address,makeRelayKeyPair()]));
+  const chainId=hash('two relay providers');
+  const state={chainId,providers:[warm.address,cold.address],nonces:{},balances:{[payer.address]:100_000_000},maxOutputTokens:128};
+  let mode,submissions=[];
+  const url=await listen(t,async(req,res)=>{
+    if (req.url==='/v1/relay/providers') {
+      const issuedAt=Date.now();
+      const providers=[warm,cold].map(wallet=>{
+        const payload={domain:'gpuchain/relay-presence/v1',chainId,provider:wallet.address,
+          publicKey:keys.get(wallet.address).publicKey,model:MODEL,contextWindow:CONTEXT,kvCache:{k:'Q8',v:'Q8'},
+          available:true,maxOutputTokens:128,issuedAt,expiresAt:issuedAt+60_000};
+        return {payload,signature:sign(wallet.privateKey,payload)};
+      });
+      return res.end(JSON.stringify({chainId,providers}));
+    }
+    assert.equal(req.url,'/v1/relay/submit');
+    const job=await body(req);
+    const {provider,jobId}=job.payload;
+    const clear=openRelayBox(keys.get(provider).privateKey,job.payload.clientKey,job.payload,'request',job.box);
+    assert.ok(verify(payer.address,clear.request,clear.signature));
+    assert.equal(clear.request.provider,provider);
+    submissions.push({provider,jobId,box:job.box});
+    if (provider===cold.address) {
+      res.writeHead(400);return res.end(JSON.stringify({error:'alternative reached'}));
+    }
+    if (mode==='unknown' && submissions.length===1) {
+      res.writeHead(503);return res.end(JSON.stringify({error:'unknown acceptance'}));
+    }
+    res.writeHead(409);
+    res.end(JSON.stringify({error:'busy',code:'provider_not_admitted',jobId:mode==='wrong job'?hash('other id'):jobId}));
+  });
+  const buy=(extra={})=>purchaseChat({wallet:payer,transport:'relay',preferredProvider:warm.address,
+    messages:[{role:'user',content:'hi'}],maxInputTokens:128,maxOutputTokens:16,...extra},{resolveLedger:async()=>({url,state})});
+  mode='rejected';
+  await assert.rejects(buy(),/alternative reached/);
+  assert.deepEqual(submissions.map(x=>x.provider),[warm.address,cold.address]);
+  submissions=[];mode='unknown';
+  await assert.rejects(buy(),/busy/);
+  assert.equal(submissions.length,2);
+  assert.deepEqual(submissions[0],submissions[1]);
+  submissions=[];mode='wrong job';
+  await assert.rejects(buy(),/busy/);
+  assert.equal(submissions.length,1);
+  submissions=[];mode='rejected';
+  await assert.rejects(buy({providerAddress:warm.address}),/did not admit/);
+  assert.equal(submissions.length,1);
+});

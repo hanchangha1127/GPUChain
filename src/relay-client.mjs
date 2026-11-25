@@ -75,6 +75,12 @@ function transient(error) {
   return !error.status || error.status===429 || error.status>=500;
 }
 
+// Only the first submission can raise this error. Once acceptance is uncertain,
+// retry the exact signed envelope and never authorize a second provider.
+export class RelayAdmissionRejected extends Error {
+  constructor() { super('Relay did not admit this job for the selected provider'); this.status=429; }
+}
+
 /** Encrypt and submit one exact job; a relay is never given a plaintext request or reply. */
 export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request,signature,messages,chatOptions,onDelta,
   signal,pollMs=1000,resultTimeoutMs=3_630_000}) {
@@ -111,6 +117,7 @@ export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request
   let accepted;
   try { accepted=await post('submit',submit); }
   catch (err) {
+    if (err.status===409 && err.admissionJob===authorization.jobId) throw new RelayAdmissionRejected();
     if (!transient(err) || signal?.aborted) throw err;
     // Retry the identical ID, authorization and ciphertext only if the outcome is unknown.
     accepted=await post('submit',submit);
@@ -149,6 +156,8 @@ export async function relayInfer({wallet,relayUrl,chainId,provider,offer,request
           meta.provider===provider && meta.boxHash===hash(proof.box) && verify(provider,meta,proof.signature),
         'Invalid signed relay completion');
         const data=openRelayBox(pair.privateKey,authorization.providerKey,authorization,'response',proof.box);
+        if (meta.outcome!==undefined) need(meta.outcome==='failed' && data.error && !data.result,
+          'Invalid signed relay failure');
         if (data.error) throw Error('Provider could not complete the relay request: '+String(data.error.code).slice(0,80));
         const result=checkReceipt(data.result,request,messages,chatOptions);
         if (streaming) {
@@ -202,13 +211,13 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
     }
     return p;
   }
-  async function processJob(job) {
+  async function processJob(job,failureReceipt) {
     const p=job?.payload;
     need(p?.domain===domain('submit') && p.chainId===chainId && p.provider===wallet.address && p.providerKey===pair.publicKey &&
       HEX.test(p.jobId) && HEX.test(p.clientKey) && p.payer!==wallet.address && p.boxHash===hash(job.box) &&
       verify(p.payer,p,job.signature),'Invalid buyer relay authorization');
     need(!completed.has(p.jobId),'Relay offered an already completed job');
-    let out, writer;
+    let out, writer,dispatched=false,definitiveFailure=false;
     try {
       const now=Date.now();
       need(count(p.issuedAt,now-600_000,now+10_000) && count(p.expiresAt,now+1,p.issuedAt+600_000),
@@ -237,7 +246,9 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
             let ack;
             try { ack=await post('frame',msg,MAX_FRAME_BOX+4096); }
             catch (err) {
-              if (signal.aborted || !transient(err) || performance.now()>=due) throw err;
+              if (signal.aborted || !transient(err) || performance.now()>=due) {
+                throw Error('Could not deliver the relay frame',{cause:err});
+              }
               await delay(pause,undefined,{signal});
               continue;
             }
@@ -245,25 +256,34 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
             break;
           }
         });
+        dispatched=true;
         result=await streamAdapter(adapter+'/v1/infer',body,writer.push,httpOptions);
-      } else result=await requestJson(adapter+'/v1/infer',{body,...httpOptions});
+      } else {
+        dispatched=true;
+        result=await requestJson(adapter+'/v1/infer',{body,...httpOptions});
+      }
       out={result:checkReceipt(result,request,messages,chatOptions)};
       if (writer) out.frameCount=await writer.finish();
     } catch (err) {
       if (writer) await writer.stop();
       if (signal.aborted) throw err;
+      // A dropped adapter connection, frame upload or malformed final receipt
+      // can leave the outcome uncertain. Preserve nonce protection for it.
+      definitiveFailure=!dispatched || err.adapterRejected===true || (!!err.status && err.status!==409);
       // The relay and logs never receive private engine errors, prompts or responses.
       out={error:{code:err.status ? 'ADAPTER_HTTP_'+err.status : 'INVALID_REQUEST_OR_RESPONSE'}};
     }
     let box;
     try { box=sealRelayBox(pair.privateKey,p.clientKey,p,'response',out); }
-    catch { box=sealRelayBox(pair.privateKey,p.clientKey,p,'response',{error:{code:'REPLY_EXCEEDS_RELAY_LIMIT'}}); }
-    pending={jobId:p.jobId,box,expiresAt:p.expiresAt};
+    catch {
+      box=sealRelayBox(pair.privateKey,p.clientKey,p,'response',{error:{code:'REPLY_EXCEEDS_RELAY_LIMIT'}});
+    }
+    pending={jobId:p.jobId,box,expiresAt:p.expiresAt,failed:definitiveFailure && failureReceipt===1};
   }
   async function cycle() {
     if (pending) {
       const p={domain:domain('complete'),chainId,provider:wallet.address,jobId:pending.jobId,
-        boxHash:hash(pending.box),issuedAt:Date.now(),salt:salt()};
+        boxHash:hash(pending.box),issuedAt:Date.now(),salt:salt(),...(pending.failed ? {outcome:'failed'} : {})};
       try { await post('complete',{...envelope(wallet,p),box:pending.box},MAX_WIRE); }
       catch (err) {
         if (transient(err) || signal.aborted) throw err;
@@ -291,10 +311,10 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
       nextPresence=Date.now()+presenceMs;
     }
     state='ready';error=null;
-    const {job}=await post('poll',signedNow(wallet,'poll',{chainId,provider:wallet.address}),MAX_WIRE);
+    const {job,failureReceipt}=await post('poll',signedNow(wallet,'poll',{chainId,provider:wallet.address}),MAX_WIRE);
     if (!job) return;
     state='busy';
-    await processJob(job);
+    await processJob(job,failureReceipt);
   }
   const pumping=(async()=>{
     while (!signal.aborted) {

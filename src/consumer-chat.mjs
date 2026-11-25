@@ -5,13 +5,13 @@ import { formatCoins } from './amount.mjs';
 import { chatResponseHash, normalizeChatMessages, normalizeChatOptions, validateChatReply } from './chat-protocol.mjs';
 import { inferenceRoutes } from './inference-routes.mjs';
 import { probeProvider } from './routing.mjs';
-import { relayInfer } from './relay-client.mjs';
+import { RelayAdmissionRejected, relayInfer } from './relay-client.mjs';
 import { requestJson } from './http.mjs';
 import { streamAdapter, trackAssistantDeltas } from './inference-stream.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 import { reasoningEffort, validateReasoningOptions } from './reasoning.mjs';
 import { resolvePublicLedger } from './public-network.mjs';
-import { submitSignedTransaction } from './submit-transaction.mjs';
+import { settleInference } from './inference-settlement.mjs';
 
 function requireValue(ok, status, message) {
   if (!ok) throw Object.assign(Error(message),{status});
@@ -109,7 +109,7 @@ function validateReceipt(result, {request,state,chatOptions}) {
 }
 
 /** Select one eligible provider, bind its response to the request, and settle exactly once. */
-export async function purchaseChat(options, {resolveLedger=()=>resolvePublicLedger({write:true}),ledger}={}) {
+export async function purchaseChat(options, {resolveLedger=()=>resolvePublicLedger({write:true}),ledger,settlementDirectory}={}) {
   const {wallet,signal,onDelta}=options;
   signal?.throwIfAborted();
   requireValue(onDelta===undefined || typeof onDelta==='function',400,'Invalid stream callback');
@@ -129,38 +129,44 @@ export async function purchaseChat(options, {resolveLedger=()=>resolvePublicLedg
   const cap=charge({inputTokens:maxInputTokens,cachedTokens:0,outputTokens:maxOutputTokens});
   requireValue(spendableBalance(state,wallet.address)>=BigInt(cap),402,
     'Insufficient balance for authorized token limits');
-  const target=await selectTarget(ledger,options,{maxOutputTokens,reasoning:Object.keys(reasoning).length>0,
-    chatProtocol:chatOptions!==undefined});
-  const {provider,url}=target;
-  const request={
-    type:'inference-request',chainId:state.chainId,payer:wallet.address,provider,
-    nonce:(state.nonces[wallet.address] ?? 0)+1,expiresAt:Date.now()+300_000,
-    messagesHash:hash(messages),maxOutputTokens,maxInputTokens,...reasoning
-  };
-  if (chatOptions!==undefined) request.chatOptionsHash=hash(chatOptions);
-  const signature=sign(wallet.privateKey,request);
-  signal?.throwIfAborted();
-  // After dispatch, complete metering/settlement even if the local HTTP client disconnects.
-  const tracker=onDelta && target.transport==='direct' ? trackAssistantDeltas(onDelta) : undefined;
-  const body={request,signature,messages,chatOptions};
-  let result;
-  if (target.transport==='relay') {
-    result=await relayInfer({wallet,relayUrl:url,chainId:state.chainId,provider,offer:target.offer,
-      ...body,onDelta});
-  } else if (tracker) {
-    result=await streamAdapter(url+'/v1/infer',body,tracker.push);
-  } else {
-    result=await requestJson(url+'/v1/infer',{body,timeoutMs:3_630_000});
+  const limits={maxOutputTokens,reasoning:Object.keys(reasoning).length>0,chatProtocol:chatOptions!==undefined};
+  let target=await selectTarget(ledger,options,limits);
+  const common={type:'inference-request',chainId:state.chainId,payer:wallet.address,
+    nonce:(state.nonces[wallet.address] ?? 0)+1,messagesHash:hash(messages),maxOutputTokens,maxInputTokens,...reasoning};
+  if (chatOptions!==undefined) common.chatOptionsHash=hash(chatOptions);
+  async function dispatch(route) {
+    signal?.throwIfAborted();
+    const request={...common,provider:route.provider,expiresAt:Date.now()+300_000};
+    const body={request,signature:sign(wallet.privateKey,request),messages,chatOptions};
+    // After dispatch, complete metering/settlement even if the local HTTP client disconnects.
+    const tracker=onDelta && route.transport==='direct' ? trackAssistantDeltas(onDelta) : undefined;
+    let result;
+    if (route.transport==='relay') {
+      result=await relayInfer({wallet,relayUrl:route.url,chainId:state.chainId,provider:route.provider,offer:route.offer,
+        ...body,onDelta});
+    } else if (tracker) {
+      result=await streamAdapter(route.url+'/v1/infer',body,tracker.push);
+    } else {
+      result=await requestJson(route.url+'/v1/infer',{body,timeoutMs:3_630_000});
+    }
+    tracker?.verify(result.message);
+    return {result,request};
   }
+  let delivery;
+  try { delivery=await dispatch(target); }
+  catch (err) {
+    if (!(err instanceof RelayAdmissionRejected) || options.providerAddress || options.providerUrl) throw err;
+    const [alternative]=await inferenceRoutes(ledger,{...limits,transport:'relay',payer:wallet.address,
+      excludeProvider:target.provider,signal});
+    if (!alternative) throw err;
+    target=alternative;
+    delivery=await dispatch(target);
+  }
+  const {provider,url}=target;
+  const {result,request}=delivery;
   const expected=validateReceipt(result,{request,state,chatOptions});
-  tracker?.verify(result.message);
-  const targetLedger=await resolveLedger();
-  requireValue(targetLedger.state.chainId===state.chainId && targetLedger.state.networkStage===state.networkStage,
-    409,'Ledger network changed during inference');
-  requireValue((targetLedger.state.nonces[wallet.address] ?? 0)+1===request.nonce,409,
-    'Wallet nonce changed during inference; receipt could not be settled');
   const tx={payload:expected,signature:sign(wallet.privateKey,expected),providerSignature:result.providerSignature};
-  const settlement=await submitSignedTransaction(targetLedger,tx);
+  const settlement=await settleInference(ledger,tx,{resolveLedger,directory:settlementDirectory});
   const {inputTokens,cachedTokens,outputTokens}=expected;
   return {provider,providerUrl:url,transport:target.transport,latencyKind:target.latencyKind,
     latencyMs:target.latencyMs,reasoning,message:result.message,finishReason:result.finishReason,

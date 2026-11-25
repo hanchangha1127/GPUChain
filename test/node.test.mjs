@@ -7,6 +7,7 @@ import test from 'node:test';
 import { generateWallet, hash, sign } from '../src/crypto.mjs';
 import { CONTEXT, MODEL, createGenesis } from '../src/ledger.mjs';
 import { readVerifiedState, startNode } from '../src/node.mjs';
+import { verifyOutcome } from '../src/transaction-outcome.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'gpuchain-snapshot-test-'));
@@ -91,6 +92,8 @@ test('concurrent duplicate and restarted replay settle only once; disk stores no
     }
   }
   const restarted = await net.launch();
+  const outcome=await (await fetch(restarted.url+'/v1/transaction-outcomes/'+hash(receipt))).json();
+  assert.deepEqual(verifyOutcome(outcome,receipt,snapshot),{height:2,hash:expected.tip});
   assert.deepEqual(await readVerifiedState(restarted.url, net.genesis.hash), expected);
   assert.ok((await submit(restarted.url, receipt)).status >= 400);
   assert.ok((await submit(restarted.url, tx)).status >= 400);

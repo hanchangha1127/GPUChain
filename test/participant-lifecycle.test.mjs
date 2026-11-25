@@ -18,6 +18,7 @@ async function setup(t) {
   const entry = join(scripts,'participant.mjs');
   await cp(new URL('../scripts/participant.mjs',import.meta.url),entry);
   await cp(new URL('../src/http.mjs',import.meta.url),join(root,'src/http.mjs'));
+  await cp(new URL('../src/private-file.mjs',import.meta.url),join(root,'src/private-file.mjs'));
   await writeFile(join(root,'src/participant-config.mjs'),
     'export const participantDir = () => process.env.GPUCHAIN_PARTICIPANT_DIR;');
   await writeFile(join(scripts,'participate.mjs'),`

@@ -11,6 +11,8 @@ import { createWalletSender } from '../src/wallet-send.mjs';
 import { startAutoProvider } from '../src/auto-provider.mjs';
 import { manageProviderRelays } from '../src/participant-relay.mjs';
 import { startOpenAiGateway } from '../src/openai-gateway.mjs';
+import { purchaseChat } from '../src/consumer-chat.mjs';
+import { walletSpendCoordinator } from '../src/wallet-spend.mjs';
 
 export async function startParticipant() {
   const {dir,wallet,port,origin} = await participantConfig();
@@ -23,6 +25,8 @@ export async function startParticipant() {
     discover:origin ? ({instanceId,ledgerUrl}) => enrollAt(ledgerUrl,publicGenesis.hash,wallet,origin,instanceId) : undefined,
   });
   let gui, auto, relays, gateway, enabling, gatewayError;
+  const spends=walletSpendCoordinator(publicGenesis.hash,wallet.address);
+  const resolveLedger=()=>resolvePublicLedger({write:true});
   const tokenFile=join(dir,'opencode.token');
   async function enableOpenAi() {
     if (gateway) return gateway.url;
@@ -31,7 +35,9 @@ export async function startParticipant() {
       if (!/^[0-9a-f]{64}$/.test(token)) throw Error('Invalid local inference token');
       const port=process.env.GPUCHAIN_OPENAI_PORT ?? '8792';
       if (!/^\d+$/.test(port)) throw Error('Invalid GPUCHAIN_OPENAI_PORT');
-      gateway=await startOpenAiGateway({wallet,token,port:Number(port),affinityDir:dir});
+      gateway=await startOpenAiGateway({wallet,token,port:Number(port),affinityDir:dir,
+        purchase:input=>spends.run('inference',resolveLedger,
+          directory=>purchaseChat(input,{resolveLedger,settlementDirectory:directory}),{signal:input.signal})});
       gatewayError=undefined;
       return gateway.url;
     })();
@@ -39,7 +45,7 @@ export async function startParticipant() {
     catch (err) { if (err.code!=='ENOENT') gatewayError=err.message; throw err; }
     finally { enabling=undefined; }
   }
-  const sender=createWalletSender({wallet});
+  const sender=createWalletSender({wallet,spends,resolveLedger});
   try {
     if (process.env.GPUCHAIN_AUTO_PROVIDER !== '0' && !process.env.GPUCHAIN_LOCAL_PROVIDER_URL) {
       const backend = process.env.GPUCHAIN_STRATA_URL;
@@ -50,7 +56,7 @@ export async function startParticipant() {
     }
     relays = manageProviderRelays({wallet,chainId:publicGenesis.hash,adapter:auto,node,
       enabled:!!auto && process.env.GPUCHAIN_INFERENCE_RELAY !== '0'});
-    const options = {getSnapshot:()=>({...node.snapshot(),relay:relays.status()}),port:Number(guiPort),
+    const options = {getSnapshot:()=>({...node.snapshot(),relay:relays.status(),spendActivity:spends.activity()}),port:Number(guiPort),
       providerUrl:process.env.GPUCHAIN_LOCAL_PROVIDER_URL,sender};
     try { gui = await startWalletUi(options); }
     catch (err) {

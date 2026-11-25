@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, link, readFile, rename, unlink, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { addressFromPrivateKey, generateWallet } from './crypto.mjs';
+import { generateWallet } from './crypto.mjs';
+import { readRuntimeWallet, writeRuntimeWallet } from './runtime-wallet.mjs';
 import { normalizeProviderEndpoint, isLoopbackEndpoint } from './provider-endpoint.mjs';
 
 export function participantDir() {
@@ -41,18 +42,19 @@ export async function participantConfig(dir = participantDir(), env = process.en
   if (previous !== undefined && (previous?.version !== 1 || typeof previous.walletFile !== 'string' ||
       !/^[a-f0-9]{64}$/.test(previous.address))) throw Error('Invalid saved participant configuration');
   const walletFile = resolve(env.GPUCHAIN_VALIDATOR_WALLET || previous?.walletFile || join(dir,'validator.wallet.json'));
-  let wallet = await readJson(walletFile);
+  let wallet = await readRuntimeWallet(walletFile,{migrate:true,expectedAddress:previous?.address}).catch(err=>{
+    if (err.code!=='ENOENT') throw err;
+  });
   if (wallet === undefined) {
     const db = await stat(join(dir,'validator.sqlite')).catch(err=>{
       if (err.code !== 'ENOENT') throw err;
       return null;
     });
     if (env.GPUCHAIN_VALIDATOR_WALLET || previous || db) throw Error('Restore the existing participant wallet: '+walletFile);
-    await publish(walletFile,generateWallet());
-    wallet = await readJson(walletFile);
+    try { await writeRuntimeWallet(walletFile,generateWallet()); }
+    catch (err) { if (err.code!=='EEXIST') throw err; }
+    wallet = await readRuntimeWallet(walletFile);
   }
-  if (wallet?.address !== addressFromPrivateKey(wallet?.privateKey) ||
-    (previous && wallet.address !== previous.address)) throw Error('Wallet does not match participant identity');
   const value = env.GPUCHAIN_VALIDATOR_PORT ?? previous?.port ?? 8790;
   const port = Number(value);
   if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(port) || port < 0 || port > 65535) {

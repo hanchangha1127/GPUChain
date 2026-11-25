@@ -7,6 +7,8 @@ import { EPOCH_TOKENS, replay } from './ledger.mjs';
 import { bundledMainnetAnchor } from './public-network.mjs';
 
 import { authenticate, nextCheckpoint, verifyAdvance } from './checkpoint.mjs';
+import { outcomeRoute, sequencerOutcome } from './transaction-outcome.mjs';
+import { openOutcomes } from './local-outcomes.mjs';
 
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_CHECKPOINT = 64 * 1024 * 1024;
@@ -55,7 +57,8 @@ export async function readVerifiedState(url, genesisHash) {
 }
 
 // Store one current state and one 32-byte digest per completed billion-token epoch.
-// SQLite commits the two changes atomically. No request or receipt enters the database.
+// A bounded window of inference block commitments is atomic with state and epoch
+// updates. The original transaction and both parties' signatures stay off disk.
 function openStore(dir, genesis) {
   mkdirSync(dir, {recursive:true, mode:0o700});
   const db = new DatabaseSync(join(dir, 'ledger.sqlite'));
@@ -83,7 +86,8 @@ function openStore(dir, genesis) {
       return {genesis, ...JSON.parse(row.certificates ?? '{}'), state:JSON.parse(row.state), signature:row.signature,
         epochHashes:readEpochs.all().map(row => Buffer.from(row.digest).toString('hex'))};
     }
-    function save(prior, next) {
+    const outcomes=openOutcomes(db);
+    function save(prior, next, proof) {
       db.exec('BEGIN IMMEDIATE');
       try {
         const row = read.get();
@@ -96,6 +100,7 @@ function openStore(dir, genesis) {
         }
         update.run(JSON.stringify(next.state), next.signature, next.authority
           ? JSON.stringify({authority:next.authority,consensus:next.consensus}) : null);
+        if (proof) outcomes.save(next.state.height,proof);
         db.exec('COMMIT');
       } catch (err) {
         db.exec('ROLLBACK');
@@ -106,7 +111,7 @@ function openStore(dir, genesis) {
     db.exec('BEGIN');
     const checkpoint = authenticate(current(), genesis.hash);
     db.exec('COMMIT');
-    return {db, save, checkpoint};
+    return {db, save, checkpoint, outcomes};
   } catch (err) {
     db.close();
     throw err;
@@ -121,7 +126,7 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
   if (wallet) check(wallet.address === genesis.payload.sequencer &&
     addressFromPrivateKey(wallet.privateKey) === wallet.address, 'Incorrect sequencer key');
   if (upstream) ledgerOrigin(upstream);
-  const {db, save, checkpoint} = openStore(dir, genesis);
+  const {db, save, checkpoint, outcomes} = openStore(dir, genesis);
   let head = checkpoint;
   let syncing;
   let closed = false;
@@ -146,7 +151,7 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
   }
   function submit(tx) {
     const {block, next} = nextCheckpoint(head, tx, wallet);
-    save(head, next);
+    save(head, next,tx.payload.type==='inference'?sequencerOutcome(block):undefined);
     head = next;
     return block;
   }
@@ -158,6 +163,10 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
     try {
       if (req.method === 'GET' && req.url === '/v1/genesis') return send(200, genesis);
       if (req.method === 'GET' && req.url === '/v1/checkpoint') return send(200, head);
+      if (req.method==='GET' && outcomeRoute.test(req.url)) {
+        const proof=outcomes.find(outcomeRoute.exec(req.url)[1]);
+        return proof?send(200,proof):send(404,{error:'Transaction outcome unavailable'});
+      }
       if (req.method === 'GET' && req.url === '/v1/status') {
         const {chainId, tip, height, providers, epoch, epochTokens, maxOutputTokens} = head.state;
         return send(200, {chainId, tip, height, providers, epoch, epochTokens, maxOutputTokens,

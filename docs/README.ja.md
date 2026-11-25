@@ -12,6 +12,8 @@ GPUChain の公開メインネット `gpuchain-mainnet-1` は、小規模な実�
 
 画面の初期言語は英語で、日本語を含む 5 言語を選択できます。`GPUChain Backup.cmd` で暗号化バックアップを作成し、復元用のパスワードを別に保管してください。公開ストアでは 1 USDT で 10 コインを購入できます。決済前に GPUChain の受取先を登録してください。[購入手順](usdt-sales.md) · [バックアップ](wallet-backup.md)
 
+Windows では、更新後の初回起動時に参加者の既存の秘密鍵を現在のユーザーの DPAPI で保護します。別の PC への復元にはパスワードで暗号化したバックアップを使います。推論を再実行せずに保留中の支払いを確認・精算するには `node src/cli.mjs recover-settlement --wallet ウォレットファイル` を実行してください。
+
 ## 別の PC の OpenCode から推論を利用する
 
 推論を依頼する PC に Node.js 24 以降と OpenCode 2.x をインストールし、GPUChain のリポジトリで `npm run opencode:setup` を実行してください。OpenCode を再起動し、`/models` から `gpuchain/qwen3.8-flash-next` を選びます。接続先は通常、依頼側 PC の `http://127.0.0.1:8792/v1` です。`opencode.token` は参加者のウォレットで有料推論を依頼するための認証情報なので、その PC に保管してください。

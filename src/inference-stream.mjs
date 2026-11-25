@@ -31,7 +31,9 @@ export async function streamAdapter(url, body, onDelta, options = {}) {
       const value = JSON.parse(data);
       if (event === 'delta') await onDelta(value);
       else if (event === 'receipt' && value && typeof value === 'object') receipt = value;
-      else if (event === 'error') throw Error('Provider stream failed: ' + String(value?.error ?? 'Protocol error').slice(0,240));
+      else if (event === 'error') throw Object.assign(
+        Error('Provider stream failed: ' + String(value?.error ?? 'Protocol error').slice(0,240)),
+        {adapterRejected:true});
       else throw Error('Unknown provider stream event');
     }
     if (!receipt) throw Error('Provider stream ended before the receipt');
