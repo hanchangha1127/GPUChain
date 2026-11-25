@@ -6,15 +6,17 @@ import { generateWallet, sign } from '../src/crypto.mjs';
 import { checkReadiness } from '../src/enrollment.mjs';
 import { createBlock, applyBlock, applyQuorumTransaction, replay, distributionReserveEffect, saleMandateEffect, saleDeliveryEffect, heldSaleAmount, spendableBalance,
   DISTRIBUTION_RESERVE as r } from '../src/ledger.mjs';
-import { SALE_MERCHANT, SALE_TOKENS, SALE_TERMS, SALE_NANO_PER_MICRO } from '../src/sale-policy.mjs';
+import { SALE_MERCHANT, SALE_TOKENS, SALE_TERMS, SALE_PRICE_TERMS, saleNanoPerMicro } from '../src/sale-policy.mjs';
 import { deliverVerifiedOrder, updateVerifiedHold } from '../hosting/sites/sale-settlement.mjs';
 
-function network() {
+function network(terms=SALE_TERMS) {
   const distributor=generateWallet(), sequencer=generateWallet(), buyer=generateWallet();
   let state=replay([genesis],genesis.hash);
   state={...state,...distributionReserveEffect(state,{type:'issue-reserve',chainId:genesis.hash,from:state.sequencer,
     to:r.address,amount:r.amount,claim:r.claim})};
-  const authorize={type:'authorize-sales',chainId:genesis.hash,from:r.address,authority:distributor.address,cap:r.amount,terms:SALE_TERMS};
+  // read() in this fixture supplies the authenticated state to the delivery service.
+  if (terms===SALE_PRICE_TERMS) state={...state,salePrice:{payload:{terms}}};
+  const authorize={type:'authorize-sales',chainId:genesis.hash,from:r.address,authority:distributor.address,cap:r.amount,terms};
   // Disposable block signer for local transition tests. Live heads always authenticate to the real pinned genesis.
   state={...state,...saleMandateEffect(state,authorize),sequencer:sequencer.address};
   function commit(tx) { state=applyBlock(state,createBlock(state,tx,sequencer)); return {head:{state}}; }
@@ -25,7 +27,8 @@ function network() {
   function order(i,chain=1,micro='1250000') {
     const txHash='0x'+i.toString(16).padStart(64,'0'), logIndex='3';
     return {orderId:'order_'+String(i).padStart(16,'0'),paymentId:'eip155:'+chain+':'+txHash+':'+logIndex,
-      to:buyer.address,amountNano:String(BigInt(micro)*SALE_NANO_PER_MICRO),usdtMicros:micro,evmChainId:chain,
+      to:buyer.address,amountNano:String(BigInt(micro)*saleNanoPerMicro(terms)),usdtMicros:micro,evmChainId:chain,
+      ...(terms===SALE_PRICE_TERMS?{terms}:{}),
       txHash,logIndex,token:SALE_TOKENS[chain],payTo:SALE_MERCHANT};
   }
   return {distributor,sequencer,buyer,authorize,order,commit,quorumCommit,read:()=>({head:{state}})};
@@ -45,6 +48,16 @@ function store(t) {
       async run(){return {meta:{changes:stmt.run(...values).changes}};}};
   }};
 }
+
+test('an explicitly reauthorized v3 settlement signs and recovers the original two-coin rate',async t=>{
+  const n=network(SALE_PRICE_TERMS),db=store(t),order=n.order(33,56,'1250000');
+  const opts={read:n.read,commit:(_live,tx)=>{ assert.equal(tx.payload.terms,SALE_PRICE_TERMS);return n.commit(tx); }};
+  const receipt=await deliverVerifiedOrder(db,order,n.distributor,opts);
+  assert.deepEqual(await deliverVerifiedOrder(db,order,n.distributor,opts),receipt);
+  assert.equal(n.read().head.state.balances[order.to],2_500_000_000);
+  const {terms,...unversioned}=order;
+  await assert.rejects(deliverVerifiedOrder(db,unversioned,n.distributor,opts),/changed/);
+});
 
 test('a paid delivery debits the reserve with zero fees; duplicates or changed terms cannot be paid again',async t=>{
   const n=network(), db=store(t), order=n.order(1);
@@ -124,8 +137,8 @@ test('reserve-issued chains require the large-amount capability in the signed va
 
 test('quorum orders lock exactly the promised units, recover a missed acquisition reply, and consume a bound hold only once',async t=>{
   const n=network(), db=store(t),o=n.order(7,56,'2500000'), other=n.order(8,1,'1');
-  db.sqlite.exec('CREATE TABLE sale_orders(id TEXT PRIMARY KEY,state TEXT,recipient TEXT,chain_id INTEGER,amount_micro INTEGER)');
-  const insert=db.sqlite.prepare("INSERT INTO sale_orders VALUES(?,'holding',?,?,?)");
+  db.sqlite.exec("CREATE TABLE sale_orders(id TEXT PRIMARY KEY,state TEXT,recipient TEXT,chain_id INTEGER,amount_micro INTEGER,intent TEXT NOT NULL DEFAULT '{}')");
+  const insert=db.sqlite.prepare("INSERT INTO sale_orders(id,state,recipient,chain_id,amount_micro) VALUES(?,'holding',?,?,?)");
   for (const x of [o,other]) insert.run(x.orderId,x.to,x.evmChainId,BigInt(x.usdtMicros));
   const read=()=>({head:{...n.read().head,authority:{}},url:'https://fixture.invalid',quorumEscrowSupported:true});
   const ops={read,commit:(_v,tx)=>n.quorumCommit(tx)};

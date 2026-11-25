@@ -10,7 +10,7 @@ import { addressFromPrivateKey, hash, sign, verify } from './crypto.mjs';
 import { requestJson } from './http.mjs';
 import { canValidate, EPOCH_TOKENS, MAINNET, replay } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
-import { SALE_TERMS } from './sale-policy.mjs';
+import { SALE_PRICE_TERMS, SALE_TERMS } from './sale-policy.mjs';
 import { LEGACY_STARTER_GRANT_PROTOCOL, STARTER_GRANT_PROTOCOL } from './starter-grants.mjs';
 import { localRelay } from './local-relay.mjs';
 import { outcomeRoute, quorumOutcome } from './transaction-outcome.mjs';
@@ -381,6 +381,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
         const starter=target.searchParams.get('starter');
         if (starter==='1') payload.starterGrants=LEGACY_STARTER_GRANT_PROTOCOL;
         if (starter==='2') payload.starterGrants=STARTER_GRANT_PROTOCOL;
+        if (target.searchParams.get('salePrice')==='3') payload.salePrice=SALE_PRICE_TERMS;
         return send(200,{payload,signature:sign(wallet.privateKey,payload)});
       }
       if (req.method === 'GET' && path === '/v1/genesis') return send(200,genesis);

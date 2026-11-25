@@ -1,11 +1,12 @@
 import { hash } from '../../src/crypto.mjs';
 import { DISTRIBUTION_RESERVE } from '../../src/ledger.mjs';
-import { SALE_NANO_PER_MICRO, SALE_COINS_PER_USDT } from '../../src/sale-policy.mjs';
+import { SALE_TERMS, SALE_PRICE_TERMS, SALE_PRICE_NANO_PER_MICRO, SALE_PRICE_COINS_PER_USDT,
+  SALE_PRICE_USDT_PER_COIN, saleNanoPerMicro } from '../../src/sale-policy.mjs';
 import * as usdt from './usdt.mjs';
 import * as settlement from './sale-settlement.mjs';
-import { heldMicroSql, holdArgs, intakeFence, isDraining, openOrders as DUE } from './sale-holds.mjs';
+import { heldSaleUnitsSql, holdArgs, intakeFence, isDraining, openOrders as DUE } from './sale-holds.mjs';
 
-const MAX_ORDER_MICRO = 1_000_000n*1_000_000_000n/SALE_NANO_PER_MICRO; // One million coins per signed quote.
+const MAX_ORDER_MICRO = 1_000_000n*1_000_000_000n/SALE_PRICE_NANO_PER_MICRO; // One million coins per signed quote.
 const TTL = 30 * 60_000;
 const HOUR = 60 * 60_000;
 const MAX_OPEN = 256;
@@ -63,10 +64,11 @@ async function scannerStatus(env,db,now) {
 }
 function publicOrder(row,acceptNewOrders) {
   const net=usdt.NETWORKS[row.chain_id];
-  const showPayment=acceptNewOrders && row.state!=='holding';
+  const order=escrowOrder(row),rate=saleNanoPerMicro(order.terms ?? SALE_TERMS);
+  const showPayment=acceptNewOrders && row.state==='reserved' && order.terms===SALE_PRICE_TERMS;
   return {id:row.id,orderId:row.id,status:row.review && !['paid','delivered'].includes(row.state)?'review':row.state,
     chainId:row.chain_id,payer:row.payer,gpuAddress:row.recipient,amountMicro:row.micro,
-    amountNano:(BigInt(row.micro)*SALE_NANO_PER_MICRO).toString(),coinsPerUsdt:SALE_COINS_PER_USDT,
+    amountNano:order.amountNano,coinsPerUsdt:Number(rate/1000n),
     payTo:showPayment?usdt.MERCHANT:null,token:showPayment?net.token:null,
     usdtUnits:showPayment?(BigInt(row.micro)*10n**BigInt(net.decimals-6)).toString():null,
     createdAt:row.created_ms,expiresAt:row.expires_ms,startBlock:row.start_block,txHash:row.tx_hash,
@@ -78,21 +80,27 @@ function evidence(row) {
 async function stock(env,db,inventory) {
   const info=await inventory(env,db);
   const balance=BigInt(info.inventoryNano), remaining=BigInt(info.mandateRemainingNano);
-  const micro=info.enabled?(balance<remaining?balance:remaining)/SALE_NANO_PER_MICRO:0n;
+  const micro=info.enabled?(balance<remaining?balance:remaining)/SALE_PRICE_NANO_PER_MICRO:0n;
   const args=holdArgs(info.saleSequence,info.ledgerSalePaymentId);
-  const {used,reserved,paid}=await db.prepare(`SELECT CAST(${heldMicroSql} AS TEXT) AS used,
+  const {used,reserved,paid}=await db.prepare(`SELECT CAST(${heldSaleUnitsSql} AS TEXT) AS used,
     (SELECT COUNT(*) FROM sale_orders WHERE state IN ('holding','reserved','releasing')) AS reserved,
     (SELECT COUNT(*) FROM sale_orders WHERE state='paid') AS paid`).bind(...args).first();
   const held=BigInt(used),free=micro-held;
   const draining=!!info.bootstrapTip && await isDraining(db);
   const quorum=!!info.quorumEscrowSupported && typeof info.quorumFence==='string' && info.quorumFence.startsWith('retired:');
-  const chainFree=quorum ? BigInt(info.freeOnChainNano ?? 0)/SALE_NANO_PER_MICRO : micro;
-  return {enabled:info.enabled,networkStage:info.networkStage==='mainnet'?'mainnet':'testnet',
+  const chainFree=quorum ? BigInt(info.freeOnChainNano ?? 0)/SALE_PRICE_NANO_PER_MICRO : micro;
+  return {enabled:info.enabled && info.priceTerms===SALE_PRICE_TERMS,networkStage:info.networkStage==='mainnet'?'mainnet':'testnet',
     admitting:(!!info.bootstrapTip && !draining) || quorum,draining,micro,held,reserved,paid,quorum,
     free:free<=0n?0n:(free<chainFree?free:chainFree),holdArgs:args,tipFence:info.bootstrapTip || info.quorumFence};
 }
-const escrowOrder=row=>({orderId:row.id,to:row.recipient,evmChainId:row.chain_id,
-  amountNano:(BigInt(row.micro)*SALE_NANO_PER_MICRO).toString()});
+function escrowOrder(row) {
+  const intent=JSON.parse(row.intent);
+  const priced=Object.hasOwn(intent,'terms');
+  demand(!priced || intent.terms===SALE_PRICE_TERMS,409,'Unsupported stored order terms');
+  return {orderId:row.id,to:row.recipient,evmChainId:row.chain_id,
+    amountNano:(BigInt(row.micro)*saleNanoPerMicro(priced?intent.terms:SALE_TERMS)).toString(),
+    ...(priced?{terms:intent.terms}:{})};
+}
 
 // All release decisions need a complete, independently agreed finalized scan.
 // Worker clocks alone cannot determine that an expired quote went unpaid.
@@ -144,6 +152,7 @@ async function deliver(env,db,row,settle) {
 }
 
 export function createSalesRoute({acceptNewOrders=false,verifyQuote=usdt.verifyQuoteSignature,health=usdt.checkRpcHealth,
+  readPrice=async db=>(await settlement.readHostedLedger(db)).head.state.salePrice?.payload?.terms,
   checkPayment=usdt.checkPayment,findPayment=usdt.findQuotePayment,inventory=settlement.readSaleInventory,
   settle=settlement.settleOrder,acquireHold=settlement.ensureSaleHold,releaseHold=settlement.releaseSaleHold}={}) {
   // Only readiness metadata is cached. A quote always performs fresh network checks.
@@ -227,7 +236,12 @@ export function createSalesRoute({acceptNewOrders=false,verifyQuote=usdt.verifyQ
       }
       if (request.method==='GET' && path==='/v1/sales/status') {
         const paused={accepting:false,paymentReady:false,reason:'sales-paused'};
+        let priceConfigured=false;
+        try { priceConfigured=await readPrice(env.DB.withSession('first-primary'))===SALE_PRICE_TERMS; }
+        catch { /* Checkout remains paused if the authorized price cannot be verified. */ }
         return response({accepting:false,paused:true,intakeMode:'paused',reason:'sales-paused',
+          priceConfigured,priceUsdt:priceConfigured?SALE_PRICE_USDT_PER_COIN:null,
+          coinsPerUsdt:priceConfigured?SALE_PRICE_COINS_PER_USDT:null,
           merchant:null,networks:{1:paused,56:paused}});
       }
     }
@@ -282,24 +296,26 @@ export function createSalesRoute({acceptNewOrders=false,verifyQuote=usdt.verifyQ
           !scanner.online?'scanner-offline':supply.free<=0n?'inventory-reserved':null;
         networks[id]={accepting:reason===null,paymentReady,reason};
       }));
-      return response({accepting:Object.values(networks).some(v=>v.accepting),inventoryNano:(supply.free*SALE_NANO_PER_MICRO).toString(),
-        saleCapacityNano:(supply.micro*SALE_NANO_PER_MICRO).toString(),reservedNano:(supply.held*SALE_NANO_PER_MICRO).toString(),
+      return response({accepting:Object.values(networks).some(v=>v.accepting),inventoryNano:(supply.free*SALE_PRICE_NANO_PER_MICRO).toString(),
+        saleCapacityNano:(supply.micro*SALE_PRICE_NANO_PER_MICRO).toString(),reservedNano:(supply.held*SALE_PRICE_NANO_PER_MICRO).toString(),
         openOrders:supply.reserved,paidPending:supply.paid,
         intakeMode:supply.draining?'draining':supply.quorum?'validator':supply.tipFence && !supply.tipFence.startsWith('retired:')?'bootstrap':'retired',
-        networks,scanner,networkStage:supply.networkStage,priceUsdt:'0.1',coinsPerUsdt:SALE_COINS_PER_USDT,maxOrderMicro:MAX_ORDER_MICRO.toString(),merchant:usdt.MERCHANT});
+        networks,scanner,networkStage:supply.networkStage,priceUsdt:SALE_PRICE_USDT_PER_COIN,coinsPerUsdt:SALE_PRICE_COINS_PER_USDT,maxOrderMicro:MAX_ORDER_MICRO.toString(),merchant:usdt.MERCHANT});
     }
     if (request.method==='POST' && path==='/v1/sales/quote') {
       const q=await input(request);
+      demand(q?.terms===SALE_PRICE_TERMS,400,'New quotes require the current price terms');
       await verifyQuote(q);
       demand(q && /^[1-9][0-9]{0,18}$/.test(q.amountMicro) && BigInt(q.amountMicro)<=MAX_ORDER_MICRO,400,'Amount exceeds order limit');
       demand(q.gpuAddress!==DISTRIBUTION_RESERVE.address,400,'Choose a buyer wallet for delivery');
-      const intent={chainId:q.chainId,payer:q.payer,gpuAddress:q.gpuAddress,amountMicro:q.amountMicro,
+      const intent={chainId:q.chainId,payer:q.payer,gpuAddress:q.gpuAddress,amountMicro:q.amountMicro,terms:q.terms,
         requestId:q.requestId,issuedAt:q.issuedAt,signature:q.signature};
       const id=hash({domain:'gpuchain/usdt-order/v1',payer:q.payer,chainId:q.chainId,requestId:q.requestId});
       const saved=await getOrder(db,id);
       if (saved) {
         const old=JSON.parse(saved.intent);
-        demand(old.gpuAddress===q.gpuAddress && old.amountMicro===q.amountMicro && old.issuedAt===q.issuedAt,409,'Request ID already used');
+        demand(old.gpuAddress===q.gpuAddress && old.amountMicro===q.amountMicro && old.issuedAt===q.issuedAt &&
+          old.terms===q.terms,409,'Request ID already used');
         return response(publicOrder(saved,acceptNewOrders));
       }
       demand(Number.isSafeInteger(q.issuedAt) && q.issuedAt>=now-120000 && q.issuedAt<=now+10000,400,'Quote signature expired');
@@ -314,12 +330,12 @@ export function createSalesRoute({acceptNewOrders=false,verifyQuote=usdt.verifyQ
       const expires=Math.min(now,q.issuedAt)+TTL;
       const ip=headers.get('cf-connecting-ip') || q.payer;
       const clientKey=hash({day:Math.floor(now/86400000),ip});
-      // SQLite sums exact integer microUSDT. Numeric parameters travel as decimal
+      // SQLite sums exact rate-weighted sale units. Numeric parameters travel as decimal
       // strings so D1's JS binding cannot round a reserve above MAX_SAFE_INTEGER.
       const inserted=await db.prepare(`INSERT OR IGNORE INTO sale_orders
         (id,chain_id,payer,recipient,amount_micro,intent,client_key,created_ms,expires_ms,start_block,cursor_block,scan_after,state,quorum_hold)
         SELECT ?,?,?,?,CAST(? AS INTEGER),?,?,?,?,?,?,0,?,?
-        WHERE ${intakeFence} AND CAST(? AS INTEGER)-${heldMicroSql}>=CAST(? AS INTEGER)
+        WHERE ${intakeFence} AND CAST(? AS INTEGER)-${heldSaleUnitsSql}>=CAST(? AS INTEGER)
           AND (SELECT count(*) FROM sale_orders WHERE ${DUE})<?
           AND NOT EXISTS(SELECT 1 FROM sale_orders WHERE chain_id=? AND payer=? AND ${DUE})
           AND (SELECT count(*) FROM sale_orders WHERE chain_id=? AND payer=? AND created_ms>?)<6
@@ -330,7 +346,9 @@ export function createSalesRoute({acceptNewOrders=false,verifyQuote=usdt.verifyQ
           clientKey,now-HOUR).run();
       const out=await getOrder(db,id);
       demand(out,409,'Reservation unavailable: existing open order, rate limit or insufficient inventory');
-      demand(out.recipient===q.gpuAddress && out.micro===q.amountMicro && JSON.parse(out.intent).issuedAt===q.issuedAt,409,'Request ID already used');
+      const storedIntent=JSON.parse(out.intent);
+      demand(out.recipient===q.gpuAddress && out.micro===q.amountMicro && storedIntent.issuedAt===q.issuedAt &&
+        storedIntent.terms===q.terms,409,'Request ID already used');
       if (out.state==='holding') {
         try {await processRow(env,db,out,now);} catch { /* Paid checkout waits for certified collateral. */ }
         return response(publicOrder(await getOrder(db,id),acceptNewOrders),inserted.meta.changes?201:200);

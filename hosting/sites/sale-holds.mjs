@@ -1,6 +1,6 @@
 import { decodeAmount } from '../../src/amount.mjs';
 import { DISTRIBUTION_RESERVE as reserve } from '../../src/ledger.mjs';
-import { SALE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
+import { SALE_NANO_PER_MICRO, SALE_PRICE_NANO_PER_MICRO, SALE_PRICE_TERMS } from '../../src/sale-policy.mjs';
 import { OUTCOME_SLOTS } from '../../src/transaction-outcome.mjs';
 
 // ledger_head also holds singleton operational rows (1–4). This disjoint
@@ -17,10 +17,11 @@ const drainRow = "id=4 AND tip='usdt-sales-drain/v1' AND CAST(checkpoint AS INTE
 export const intakeFence = `EXISTS(SELECT 1 FROM ledger_head WHERE id=1 AND tip=?)
   AND (?=1 OR NOT EXISTS(SELECT 1 FROM ledger_head WHERE ${drainRow}))`;
 
-// Express liabilities in microUSDT. This fits SQLite int64 even at the full
-// trillion-coin supply. A paid order may already be debited but still be
-// awaiting its D1 acknowledgement after an interrupted request.
-export const heldMicroSql = `COALESCE((SELECT SUM(o.amount_micro) FROM sale_orders o
+// Count liabilities in units of 2,000 nanocoins so even the full reserve
+// fits SQLite int64. An original 10:1 microUSDT consumes five such units.
+// A completed ledger debit awaiting its D1 acknowledgement counts only once.
+export const heldSaleUnitsSql = `COALESCE((SELECT SUM(o.amount_micro * CASE
+    WHEN json_extract(o.intent,'$.terms')='${SALE_PRICE_TERMS}' THEN 1 ELSE ${SALE_NANO_PER_MICRO/SALE_PRICE_NANO_PER_MICRO} END) FROM sale_orders o
   WHERE o.state IN ('holding','reserved','releasing') OR (o.state='paid' AND NOT EXISTS(
     SELECT 1 FROM sale_delivery d WHERE d.order_id=o.id AND d.payment_id=o.event_id AND
       ((d.confirmation IS NOT NULL AND d.sequence<=?) OR (d.sequence=? AND d.payment_id=?))
@@ -51,8 +52,13 @@ export function writerBudgetGuard(state,next,type) {
   const mandate=next.saleMandate;
   const authorityChanged=state.saleMandate?.active && state.saleMandate.authority!==mandate?.authority;
   const allowance=mandate?.active && !authorityChanged ? decodeAmount(mandate.cap)-decodeAmount(mandate.spent) : 0n;
-  const ceiling=(after<allowance?after:allowance)/SALE_NANO_PER_MICRO;
-  return {sql:` AND CAST(? AS INTEGER)>=${heldMicroSql}`,
+  const ceiling=(after<allowance?after:allowance)/SALE_PRICE_NANO_PER_MICRO;
+  // A future delegated price switch must leave every unheld legacy order
+  // time to settle. Recording the paused display price does not rotate the mandate.
+  const rotation=type==='authorize-sales' && mandate?.terms===SALE_PRICE_TERMS && state.saleMandate?.terms!==SALE_PRICE_TERMS;
+  const legacyFence=rotation?` AND NOT EXISTS(SELECT 1 FROM sale_orders WHERE quorum_hold=0 AND ${openOrders}
+    AND json_type(intent,'$.terms') IS NULL)`:'';
+  return {sql:` AND CAST(? AS INTEGER)>=${heldSaleUnitsSql}`+legacyFence,
     args:[ceiling.toString(),...holdArgs(next.lastSale?.sequence ?? 0,next.lastSale?.paymentId)]};
 }
 

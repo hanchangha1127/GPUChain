@@ -2,10 +2,10 @@ import { formatCoins } from '../../src/amount.mjs';
 import { nextCheckpoint } from '../../src/checkpoint.mjs';
 import { addressFromPrivateKey, sign } from '../../src/crypto.mjs';
 import { DISTRIBUTION_RESERVE, spendableBalance } from '../../src/ledger.mjs';
-import { SALE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
+import { SALE_PRICE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
 import { STARTER_GRANT_AMOUNT, activeStarterMandate, knownStarterWallet, remainingStarterClaims, starterAddressEligible,
   starterClaimAmount, starterClaimHeight, starterGrantAmount } from '../../src/starter-grants.mjs';
-import { GRANT_HEAD_BYTES, commitHostedTransaction, heldMicroSql, holdArgs } from './sale-holds.mjs';
+import { GRANT_HEAD_BYTES, commitHostedTransaction, heldSaleUnitsSql, holdArgs } from './sale-holds.mjs';
 import { readHostedLedger, quorumCommit } from './sale-settlement.mjs';
 
 const response=(data,status=200)=>Response.json(data,{status,headers:{
@@ -27,9 +27,9 @@ async function statusFor(live,db,address) {
     remaining=remainingStarterClaims(state);
     let available=spendableBalance(state,DISTRIBUTION_RESERVE.address);
     if (!head.authority) {
-      const row=await db.prepare('SELECT CAST('+heldMicroSql+' AS TEXT) AS held')
+      const row=await db.prepare('SELECT CAST('+heldSaleUnitsSql+' AS TEXT) AS held')
         .bind(...holdArgs(state.lastSale?.sequence ?? 0,state.lastSale?.paymentId)).first();
-      available-=BigInt(row.held)*SALE_NANO_PER_MICRO;
+      available-=BigInt(row.held)*SALE_PRICE_NANO_PER_MICRO;
       // Keep room for a new claim marker and balance/nonce growth. The
       // final atomic write also checks the actual encoded next checkpoint.
       if (new TextEncoder().encode(JSON.stringify(head)).length+512>GRANT_HEAD_BYTES) reason='hosted_capacity';

@@ -2,7 +2,8 @@
 // selected USDT contracts. Normal GPUChain participants do not import this module.
 import { DISTRIBUTION_RESERVE } from '../../src/ledger.mjs';
 import { RESERVE_NANOCOINS } from '../../src/amount.mjs';
-import { SALE_MERCHANT, SALE_TOKENS, SALE_COINS_PER_USDT, SALE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
+import { SALE_MERCHANT, SALE_TOKENS, SALE_COINS_PER_USDT, SALE_NANO_PER_MICRO,
+  SALE_PRICE_TERMS, SALE_PRICE_COINS_PER_USDT, SALE_PRICE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
 
 export const MERCHANT = SALE_MERCHANT;
 export const NETWORKS = Object.freeze({
@@ -10,14 +11,15 @@ export const NETWORKS = Object.freeze({
   56:Object.freeze({name:'BNB Smart Chain',symbol:'BNB',token:SALE_TOKENS[56],decimals:18})
 });
 export const SALE_CONFIG = Object.freeze({merchant:MERCHANT,networks:NETWORKS,genesis:DISTRIBUTION_RESERVE.chainId,
-  coinsPerUsdt:SALE_COINS_PER_USDT,nanoPerMicro:SALE_NANO_PER_MICRO.toString()});
+  quoteVersion:3,coinsPerUsdt:SALE_PRICE_COINS_PER_USDT,nanoPerMicro:SALE_PRICE_NANO_PER_MICRO.toString()});
+const originalConfig=Object.freeze({...SALE_CONFIG,quoteVersion:2,coinsPerUsdt:SALE_COINS_PER_USDT,
+  nanoPerMicro:SALE_NANO_PER_MICRO.toString()});
 const transferTopic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const evmAddress = /^0x[0-9a-f]{40}$/;
 const txHash = /^0x[0-9a-f]{64}$/;
 const gpuAddress = /^[0-9a-f]{64}$/;
 const micro = /^[1-9][0-9]{0,18}$/;
 const quantity = /^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/i;
-const maxMicro = BigInt(RESERVE_NANOCOINS)/SALE_NANO_PER_MICRO;
 function requireThat(condition,status,message) {
   if (!condition) throw Object.assign(Error(message),{status});
 }
@@ -31,7 +33,7 @@ function network(id) {
 export function paymentMessage(input, config) {
   const delivery=(BigInt(input.amountMicro)*BigInt(config.nanoPerMicro)).toString();
   return [
-    'GPUChain USDT purchase quote v2',
+    'GPUChain USDT purchase quote v'+config.quoteVersion,
     'GPUChain genesis: '+config.genesis, 'EVM chain ID: '+input.chainId,
     'USDT contract: '+config.networks[input.chainId].token, 'Merchant: '+config.merchant,
     'Payer: '+input.payer, 'GPUChain recipient: '+input.gpuAddress, 'USDT micro-units: '+input.amountMicro,
@@ -40,7 +42,12 @@ export function paymentMessage(input, config) {
     'Pay before (Unix ms): '+(input.issuedAt+1800000)
   ].join('\n');
 }
-export const quoteMessage = q => paymentMessage(q,SALE_CONFIG);
+function orderConfig(order) {
+  if (!Object.hasOwn(order,'terms')) return originalConfig;
+  requireThat(order.terms===SALE_PRICE_TERMS,400,'Invalid purchase price terms');
+  return SALE_CONFIG;
+}
+export const quoteMessage = q => paymentMessage(q,orderConfig(q));
 
 export function transferData(amountMicro, decimals, merchant) {
   const units = BigInt(amountMicro)*10n**BigInt(decimals-6);
@@ -50,6 +57,9 @@ export function transferData(amountMicro, decimals, merchant) {
 async function signed(input,kind) {
   requireThat(input && typeof input === 'object',400,'Expected a purchase request');
   network(input.chainId);
+  const config=orderConfig(input);
+  if (kind==='quote') requireThat(config===SALE_CONFIG,400,'New quotes require the current signed price terms');
+  const maxMicro=BigInt(RESERVE_NANOCOINS)/BigInt(config.nanoPerMicro);
   requireThat(typeof input.payer === 'string' && evmAddress.test(input.payer) && input.payer !== MERCHANT &&
     typeof input.gpuAddress === 'string' && gpuAddress.test(input.gpuAddress) &&
     typeof input.amountMicro === 'string' && micro.test(input.amountMicro) && BigInt(input.amountMicro)<=maxMicro &&
@@ -64,7 +74,7 @@ async function signed(input,kind) {
   const [{secp256k1},{keccak_256},{bytesToHex,hexToBytes,concatBytes,utf8ToBytes}] = await Promise.all([
     import('@noble/curves/secp256k1.js'),import('@noble/hashes/sha3.js'),import('@noble/hashes/utils.js')
   ]);
-  const bytes = utf8ToBytes(quoteMessage(input));
+  const bytes = utf8ToBytes(paymentMessage(input,config));
   const digest = keccak_256(concatBytes(utf8ToBytes('\x19Ethereum Signed Message:\n'+bytes.length),bytes));
   const sig = hexToBytes(input.signature.slice(2));
   const v = sig[64]>=27 ? sig[64]-27 : sig[64];
@@ -203,7 +213,7 @@ export async function checkPayment(claim,{rpcUrls,fetcher=fetch,minBlock}={}) {
 // Each page is cursor-based and bounded. A caller persists nextBlock only after
 // processing all returned matches; faults/disagreement never advance the cursor.
 export async function findQuotePayment(order,{rpcUrls,fetcher=fetch,fromBlock,minBlock=order.startBlock}={}) {
-  await verifyQuoteSignature(order);
+  await signed(order,'stored-quote');
   const id=order.orderId ?? order.id;
   requireThat(typeof id==='string' && /^[a-zA-Z0-9_-]{16,128}$/.test(id) &&
     Number.isSafeInteger(order.createdAt) && Number.isSafeInteger(order.expiresAt) &&

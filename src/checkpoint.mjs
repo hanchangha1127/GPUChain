@@ -20,6 +20,9 @@ export function verifyAdvance(prior,next) {
   if (prior.authority && (!next.authority || hash(next.authority) !== hash(prior.authority))) {
     throw Error('Consensus authority downgrade or conflict');
   }
+  if (old.salePrice && (!state.salePrice || hash(old.salePrice)!==hash(state.salePrice))) {
+    throw Error('Sale price configuration rollback or conflict');
+  }
   if (old.starterMandateV2 && hash(old.starterMandate ?? null)!==hash(state.starterMandate ?? null)) {
     throw Error('Legacy starter history changed after cutover');
   }

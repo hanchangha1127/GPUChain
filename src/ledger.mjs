@@ -5,7 +5,7 @@ import { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
 import { LEGACY_STARTER_GRANT_AMOUNT, MAX_STARTER_WALLETS, STARTER_AUTHORIZATION_V2, STARTER_GRANT_AMOUNT,
   activeStarterMandate, legacyStarterThrough, remainingStarterClaims, starterAddressEligible, starterClaimHeight, starterGrantAmount } from './starter-grants.mjs';
 export { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
-import { SALE_MERCHANT, SALE_TOKENS, SALE_NANO_PER_MICRO, SALE_TERMS } from './sale-policy.mjs';
+import { SALE_MERCHANT, SALE_TOKENS, SALE_TERMS, SALE_PRICE_TERMS, saleNanoPerMicro } from './sale-policy.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
 
@@ -150,10 +150,10 @@ function pay(state, from, to, amount) {
     [to]: encodeAmount(decodeAmount(state.balances[to] ?? 0) + n, 'recipient balance')};
 }
 
-function requireGrantNetwork(state) {
+function requireReserveMainnet(state) {
   requireValue(state.chainId===MAINNET.chainId && state.sequencer===MAINNET.issuer &&
     state.networkId===MAINNET.networkId && state.networkStage==='mainnet' && state.reserveClaim===DISTRIBUTION_RESERVE.claim,
-  'Starter grants require the issued public mainnet reserve');
+  'Operation requires the issued public mainnet reserve');
 }
 
 function validateGrantCap(value,spent,unit) {
@@ -165,7 +165,7 @@ function validateGrantCap(value,spent,unit) {
 
 // Retain the signed owner permission so a pruned observer can verify its lifetime budget.
 export function starterMandateEffect(state,tx) {
-  requireGrantNetwork(state);
+  requireReserveMainnet(state);
   const p=tx.payload,old=activeStarterMandate(state);
   requireValue(p.chainId===state.chainId && p.from===DISTRIBUTION_RESERVE.address,
     'Only the distribution reserve may authorize starter grants');
@@ -190,7 +190,7 @@ export function starterMandateEffect(state,tx) {
 }
 
 export function starterGrantEffect(state,p) {
-  requireGrantNetwork(state);
+  requireReserveMainnet(state);
   const m=activeStarterMandate(state);
   requireValue(m?.active===true && p.type==='starter-grant' && p.from===MAINNET.issuer &&
     p.chainId===state.chainId && p.mandateVersion===m.version,'Starter grant authorization missing or changed');
@@ -213,7 +213,7 @@ export function verifyStarterState(state) {
   const legacy=Object.hasOwn(state,'starterMandate') || Object.hasOwn(state,'starterClaims');
   const modern=Object.hasOwn(state,'starterMandateV2') || Object.hasOwn(state,'starterClaimsV2');
   if (!legacy && !modern) return;
-  requireGrantNetwork(state);
+  requireReserveMainnet(state);
   const heights=new Set();
   if (legacy) verifyStarterEra(state,false,heights);
   if (modern) verifyStarterEra(state,true,heights);
@@ -278,6 +278,19 @@ export function distributionReserveEffect(state, payload) {
   };
 }
 
+// This certificate describes the price only. It grants no spending allowance.
+export function verifySalePrice(state,tx=state.salePrice) {
+  if (tx===undefined) return;
+  fields(tx,['payload','signature']);
+  const p=tx.payload;
+  fields(p,['type','chainId','from','nonce','terms']);
+  requireReserveMainnet(state);
+  requireValue(p.type==='configure-sale-price' && p.from===DISTRIBUTION_RESERVE.address &&
+    p.chainId===state.chainId && p.terms===SALE_PRICE_TERMS &&
+    integer(p.nonce,'sale price nonce',1)<=(state.nonces[p.from] ?? 0),'Invalid configured sale price');
+  signature(p.from,p,tx.signature,'sale price configuration');
+}
+
 /** A reserve owner's signature authorizes or revokes a narrowly scoped settlement signer. */
 export function saleMandateEffect(state,p) {
   const r=DISTRIBUTION_RESERVE, old=state.saleMandate;
@@ -289,17 +302,17 @@ export function saleMandateEffect(state,p) {
     return {saleMandate:{...old,version,active:false}};
   }
   requireValue(p.type==='authorize-sales','Invalid sale mandate');
-  requireValue(p.terms===SALE_TERMS,'Invalid USDT sale price');
+  requireValue(p.terms===(state.salePrice?.payload.terms ?? SALE_TERMS),'Invalid USDT sale price');
   hex64(p.authority,'sale authority');
   requireValue(p.authority!==r.address && p.authority!==state.sequencer,'Expected a separate sale authority');
   const cap=decodeAmount(p.cap,'sale cap'), spent=old?.spent ?? 0;
   requireValue(cap>0n && cap<=decodeAmount(r.amount) && cap>=decodeAmount(spent)+heldSaleAmount(state),'Invalid cumulative sale cap');
-  return {saleMandate:{version,authority:p.authority,cap:p.cap,spent,active:true,terms:SALE_TERMS}};
+  return {saleMandate:{version,authority:p.authority,cap:p.cap,spent,active:true,terms:p.terms}};
 }
 
 const validSaleOrderId=id=>typeof id==='string' && /^[A-Za-z0-9_-]{16,128}$/.test(id);
 export function saleHoldCommitment(p) {
-  return hash({domain:'gpuchain/sale-hold/v1',chainId:DISTRIBUTION_RESERVE.chainId,terms:SALE_TERMS,
+  return hash({domain:'gpuchain/sale-hold/v1',chainId:DISTRIBUTION_RESERVE.chainId,terms:p.terms ?? SALE_TERMS,
     orderId:p.orderId,to:p.to,amount:p.amount,evmChainId:p.evmChainId});
 }
 
@@ -307,12 +320,30 @@ function findHold(state,id) {
   return Object.hasOwn(state.saleHolds ?? {},id) ? state.saleHolds[id] : undefined;
 }
 
+// Legacy transactions omitted terms. A v3 signer must explicitly bind the new
+// rate; past orders/holds can still be honored at their original ten-coin rate.
+function authorizedSaleRate(state,p) {
+  const mandateTerms=state.saleMandate?.terms;
+  const v3=mandateTerms===SALE_PRICE_TERMS && state.salePrice?.payload.terms===SALE_PRICE_TERMS;
+  requireValue(mandateTerms===SALE_TERMS || v3,'Invalid USDT sale mandate terms');
+  if (!Object.hasOwn(p,'terms')) {
+    if (v3 && p.type!=='release-sale') {
+      requireValue(p.type==='deliver-sale' && findHold(state,p.orderId)?.commitment===saleHoldCommitment(p),
+        'Legacy delivery after repricing requires an existing matching hold');
+    }
+    return saleNanoPerMicro(SALE_TERMS);
+  }
+  requireValue(v3 && p.terms===SALE_PRICE_TERMS,'Sale requires the configured and separately authorized price');
+  return saleNanoPerMicro(p.terms);
+}
+
 /** A unique order lock retains only a fixed commitment and exact amount. */
 export function saleHoldEffect(state,p) {
   const m=state.saleMandate,r=DISTRIBUTION_RESERVE;
   requireValue(state.chainId===r.chainId && p.chainId===r.chainId && state.reserveClaim===r.claim &&
-    m?.terms===SALE_TERMS && p.from===m.authority && p.mandateVersion===m.version,
+    m && p.from===m.authority && p.mandateVersion===m.version,
   'Holds require the current reserve mandate');
+  const rate=authorizedSaleRate(state,p);
   requireValue(validSaleOrderId(p.orderId),'Invalid sale order ID');
   const existing=findHold(state,p.orderId);
   if (p.type==='release-sale') {
@@ -326,7 +357,7 @@ export function saleHoldEffect(state,p) {
   hex64(p.to,'sale hold recipient');
   requireValue(Object.keys(state.saleHolds ?? {}).length<256,'Too many outstanding sale holds');
   const amount=decodeAmount(p.amount,'sale hold amount'), total=heldSaleAmount(state)+amount;
-  requireValue(amount>0n && amount%SALE_NANO_PER_MICRO===0n &&
+  requireValue(amount>0n && amount%rate===0n &&
     total<=decodeAmount(state.balances[r.address] ?? 0) &&
     total+decodeAmount(m.spent)<=decodeAmount(m.cap),'Insufficient unreserved inventory or allowance');
   return {...state.saleHolds,[p.orderId]:{amount:p.amount,commitment:saleHoldCommitment(p)}};
@@ -337,9 +368,10 @@ export function saleDeliveryEffect(state,p,quorum=false) {
   const r=DISTRIBUTION_RESERVE, mandate=state.saleMandate;
   const hold=findHold(state,p.orderId);
   requireValue(state.chainId===r.chainId && p.chainId===r.chainId && state.reserveClaim===r.claim &&
-    p.type==='deliver-sale' && mandate?.terms===SALE_TERMS && (mandate.active || hold) &&
+    p.type==='deliver-sale' && mandate && (mandate.active || hold) &&
     p.from===mandate.authority && p.mandateVersion===mandate.version,
   'Sales require the current reserve-authorized settlement signer');
+  const rate=authorizedSaleRate(state,p);
   const sequence=integer(p.sequence,'sale sequence',1);
   requireValue(sequence===(state.lastSale?.sequence ?? 0)+1,'Unexpected sale sequence');
   requireValue((p.evmChainId===1 || p.evmChainId===56) && typeof p.txHash==='string' &&
@@ -350,8 +382,8 @@ export function saleDeliveryEffect(state,p,quorum=false) {
   requireValue(p.paymentId==='eip155:'+p.evmChainId+':'+p.txHash+':'+p.logIndex &&
     p.paymentId!==state.lastSale?.paymentId,'Invalid or repeated sale payment ID');
   requireValue(typeof p.usdtMicros==='string' && /^[1-9][0-9]{0,18}$/.test(p.usdtMicros) &&
-    BigInt(p.usdtMicros)*SALE_NANO_PER_MICRO===decodeAmount(p.amount) && decodeAmount(p.amount)<=decodeAmount(r.amount),
-  'Sale amount must equal ten coins per USDT');
+    BigInt(p.usdtMicros)*rate===decodeAmount(p.amount) && decodeAmount(p.amount)<=decodeAmount(r.amount),
+  'Sale amount differs from the signed USDT sale terms');
   if (quorum) requireValue(hold?.commitment===saleHoldCommitment(p) && hold.amount===p.amount,
     'Quorum delivery requires the matching confirmed sale hold');
   const debitState={...state};
@@ -433,6 +465,7 @@ const EXTRA = Object.freeze({
   'deliver-sale': ['to','amount','sequence','paymentId','usdtMicros','evmChainId','txHash','logIndex',
     'mandateVersion','orderId','payTo','token'],
   'authorize-sales':['authority','cap','terms'],
+  'configure-sale-price':['terms'],
   'suspend-sales':[],
   'authorize-starter-grants':['cap'],
   [STARTER_AUTHORIZATION_V2]:['cap','legacyThrough'],
@@ -453,6 +486,7 @@ function transition(state, tx, quorum=false) {
   const expected = [...BASE, ...EXTRA[p.type]];
   if (p.type === 'add-provider' && Object.hasOwn(p, 'endpoint')) expected.push('endpoint');
   if (p.type==='inference' && (state.networkStage===MAINNET.networkStage || Object.hasOwn(p,'kvCache'))) expected.push('kvCache');
+  if ((p.type==='hold-sale' || p.type==='deliver-sale') && Object.hasOwn(p,'terms')) expected.push('terms');
   fields(p, expected);
   fields(tx, p.type === 'inference' ? ['payload', 'signature', 'providerSignature'] : ['payload', 'signature']);
   requireValue(p.chainId === state.chainId, 'Invalid chainId');
@@ -478,6 +512,10 @@ function transition(state, tx, quorum=false) {
     requireValue(quorum,'On-chain order holds are used after validator activation');
     next.saleHolds=saleHoldEffect(state,p);
     if (!Object.keys(next.saleHolds).length) delete next.saleHolds;
+  } else if (p.type==='configure-sale-price') {
+    requireValue(!state.salePrice,'Sale price is already configured');
+    verifySalePrice(next,tx);
+    next.salePrice=structuredClone(tx);
   } else if (p.type === 'authorize-sales' || p.type === 'suspend-sales') {
     Object.assign(next,saleMandateEffect(state,p));
   } else if (p.type==='authorize-starter-grants' || p.type===STARTER_AUTHORIZATION_V2 || p.type==='suspend-starter-grants') {

@@ -4,7 +4,7 @@ import { verifyConsensusAck } from '../../src/consensus.mjs';
 import { addressFromPrivateKey, hash, sign, verify } from '../../src/crypto.mjs';
 import { checkReadiness, limitedJson } from '../../src/enrollment.mjs';
 import { DISTRIBUTION_RESERVE, heldSaleAmount, saleDeliveryEffect, saleHoldCommitment, saleHoldEffect } from '../../src/ledger.mjs';
-import { SALE_NANO_PER_MICRO, SALE_TERMS } from '../../src/sale-policy.mjs';
+import { SALE_PRICE_TERMS, SALE_TERMS, saleNanoPerMicro } from '../../src/sale-policy.mjs';
 import { HOSTED_HEAD_BYTES as MAX_HEAD } from './sale-holds.mjs';
 
 const reserve = DISTRIBUTION_RESERVE;
@@ -42,7 +42,7 @@ export async function readHostedLedger(db,{starterGrants=false}={}) {
     verifyAdvance(initial,head);
     let capable=true;
     try {await checkReadiness({chainId:reserve.chainId,address:member.address,origin:member.url,instanceId:member.instanceId},
-      fetch,true,starterGrants,starterGrants);}
+      fetch,true,starterGrants,starterGrants,Boolean(head.state.salePrice));}
     catch {capable=false;}
     return {head,url:member.url,capable};
   }));
@@ -58,7 +58,8 @@ function capacity(state,owner) {
   const m=state.saleMandate;
   const available=decodeAmount(state.balances[reserve.address] ?? 0);
   const permitted=state.chainId===reserve.chainId && state.reserveClaim===reserve.claim &&
-    m?.active===true && m.terms===SALE_TERMS && owner.address===m.authority;
+    m?.active===true && m.terms===SALE_PRICE_TERMS &&
+    state.salePrice?.payload?.terms===SALE_PRICE_TERMS && owner.address===m.authority;
   const left=permitted ? decodeAmount(m.cap)-decodeAmount(m.spent) : 0n;
   const inventory=available<left ? available : left;
   need(inventory>=0n,503,'Invalid sale allowance');
@@ -69,7 +70,16 @@ function capacity(state,owner) {
 
 function fingerprint(order) {
   const {orderId,paymentId,to,evmChainId,txHash,logIndex,usdtMicros,amountNano,token,payTo}=order;
-  return hash({orderId,paymentId,to,evmChainId,txHash,logIndex,usdtMicros,amountNano,token,payTo});
+  return hash({orderId,paymentId,to,evmChainId,txHash,logIndex,usdtMicros,amountNano,token,payTo,
+    ...wireTerms(order)});
+}
+
+// The original signature, order fingerprint and ledger transaction omitted
+// terms. Include the marker only for a new explicitly priced order.
+function wireTerms(order) {
+  if (!Object.hasOwn(order,'terms')) return {};
+  need(order.terms===SALE_PRICE_TERMS,409,'Unsupported order price terms');
+  return {terms:order.terms};
 }
 
 function proposedTx(order,state,owner,quorum) {
@@ -78,14 +88,15 @@ function proposedTx(order,state,owner,quorum) {
   const payload={type:'deliver-sale',chainId:reserve.chainId,from:owner.address,to,orderId,paymentId,evmChainId,
     txHash,logIndex,usdtMicros,token,payTo,amount:encodeAmount(BigInt(order.amountNano)),
     nonce:(state.nonces[owner.address] ?? 0)+1,sequence:(state.lastSale?.sequence ?? 0)+1,
-    mandateVersion:state.saleMandate.version};
+    mandateVersion:state.saleMandate.version,...wireTerms(order)};
   saleDeliveryEffect(state,payload,quorum);
   return {payload,signature:sign(owner.privateKey,payload)};
 }
 
 function asOrder(payload) {
   const {orderId,paymentId,to,evmChainId,txHash,logIndex,usdtMicros,token,payTo}=payload;
-  return {orderId,paymentId,to,evmChainId,txHash,logIndex,usdtMicros,token,payTo,amountNano:String(payload.amount)};
+  return {orderId,paymentId,to,evmChainId,txHash,logIndex,usdtMicros,token,payTo,amountNano:String(payload.amount),
+    ...wireTerms(payload)};
 }
 
 function journal(db) {
@@ -187,7 +198,7 @@ export async function deliverVerifiedOrder(db,order,owner,{read,commit}) {
 export async function readSaleInventory(env,db) {
   const {head,quorumEscrowSupported=false}=await readHostedLedger(db), state=head.state;
   const fence={bootstrapTip:head.authority?null:state.tip,ledgerSalePaymentId:state.lastSale?.paymentId ?? null,
-    networkStage:state.networkStage === 'mainnet'?'mainnet':'testnet'};
+    networkStage:state.networkStage === 'mainnet'?'mainnet':'testnet',priceTerms:state.salePrice?.payload?.terms};
   fence.quorumFence=head.authority?'retired:'+hash(head.authority):null;
   fence.quorumEscrowSupported=quorumEscrowSupported;
   if (!env.GPUCHAIN_SALES_SIGNER_PKCS8) {
@@ -216,12 +227,15 @@ export async function updateVerifiedHold(db,order,owner,acquire,{read,commit}) {
   const report=(s,held,commitment)=>({held,commitment,height:s.height,tip:s.tip});
   if (!live.head.authority) return {...report(state,false,null),bootstrap:true};
   need(live.quorumEscrowSupported,503,'A majority with active sale escrow is required');
-  const row=await db.prepare('SELECT state,recipient,chain_id,CAST(amount_micro AS TEXT) AS micro FROM sale_orders WHERE id=?')
+  const row=await db.prepare('SELECT state,recipient,chain_id,intent,CAST(amount_micro AS TEXT) AS micro FROM sale_orders WHERE id=?')
     .bind(order.orderId).first();
+  const persisted=row && wireTerms(JSON.parse(row.intent));
   need(row && row.state===(acquire?'holding':'releasing') && row.recipient===order.to &&
-    row.chain_id===order.evmChainId && String(BigInt(row.micro)*SALE_NANO_PER_MICRO)===order.amountNano,
+    row.chain_id===order.evmChainId && persisted.terms===order.terms &&
+    String(BigInt(row.micro)*saleNanoPerMicro(persisted.terms ?? SALE_TERMS))===order.amountNano,
   409,'Sale order phase or bound terms changed');
-  const fields={orderId:order.orderId,to:order.to,amount:encodeAmount(BigInt(order.amountNano)),evmChainId:order.evmChainId};
+  const fields={orderId:order.orderId,to:order.to,amount:encodeAmount(BigInt(order.amountNano)),evmChainId:order.evmChainId,
+    ...persisted};
   const commitment=saleHoldCommitment(fields);
   const held=Object.hasOwn(state.saleHolds ?? {},order.orderId) ? state.saleHolds[order.orderId] : null;
   if (held) need(held.commitment===commitment && held.amount===fields.amount,409,'Conflicting on-chain sale hold');

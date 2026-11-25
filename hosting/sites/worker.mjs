@@ -100,7 +100,9 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
   let ready;
   const production=head.state.networkStage==='mainnet';
   const starter=Boolean(activeStarterMandate(head.state));
-  try { ready = await checkReadiness(member,fetchReady,Boolean(head.state.reserveClaim),production,starter); }
+  const probe=candidate=>checkReadiness(candidate,fetchReady,Boolean(head.state.reserveClaim),
+    production,starter,Boolean(head.state.salePrice));
+  try { ready = await probe(member); }
   catch { throw new HttpError(409,'Cannot verify validator readiness at the signed origin'); }
   let roster;
   try { roster = await recordCandidate(db,{payload:member,signature:intent.signature}); }
@@ -109,7 +111,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
 
   const probes = await Promise.allSettled(roster.candidates.map(item=>item.payload)
     .filter(candidate => canValidate(head.state,candidate.address))
-    .map(candidate => candidate.address === ready.address ? ready : checkReadiness(candidate,fetchReady,Boolean(head.state.reserveClaim),production,starter)));
+    .map(candidate => candidate.address === ready.address ? ready : probe(candidate)));
   const reachable = probes.filter(r => r.status === 'fulfilled').map(r => r.value);
   if (reachable.length < 3) return json({active:false,checkpoint:head});
   let published = [];

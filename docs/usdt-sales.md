@@ -2,6 +2,8 @@
 
 New GPUChain USDT purchases on Ethereum and BNB Smart Chain are paused. Please do not send USDT. The site offers 1,000 starter coins once per eligible mainnet address. [Starter coins and order lookup](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
 
+The configured sale price is **0.5 USDT per GPUChain coin**, or **2 coins per USDT**. An order previously accepted at 10 coins per USDT keeps its signed rate for settlement and lookup.
+
 ## Recover an existing order
 
 If you already paid, open the site and enter the original order ID. You can supply the public transaction hash so the Worker can verify the finalized transfer against the original signed order. A matching payment is delivered to the GPUChain wallet registered on that order. Keep the order ID and transaction hash if an expired, late or mismatched payment needs review.

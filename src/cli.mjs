@@ -7,7 +7,7 @@ import { decodeRuntimeWallet, readRuntimeWallet, writeRuntimeWallet } from './ru
 import { parseWalletDocument } from './private-file.mjs';
 import { CONTEXT, createGenesis, DISTRIBUTION_RESERVE, EPOCH_TOKENS, MAINNET, mainnetPromotionPayload, replay } from './ledger.mjs';
 import { formatCoins, parseCoins } from './amount.mjs';
-import { SALE_TERMS } from './sale-policy.mjs';
+import { SALE_PRICE_TERMS, SALE_TERMS } from './sale-policy.mjs';
 import { legacyStarterThrough, STARTER_AUTHORIZATION_V2 } from './starter-grants.mjs';
 import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
@@ -37,6 +37,7 @@ const usage = `GPUChain
   issue-reserve --wallet SEQUENCER_KEY [--ledger URL]  (one-time original public genesis distribution)
   promote-mainnet --wallet SEQUENCER_KEY [--ledger URL]
   authorize-sales --wallet RESERVE_KEY --authority SALE_ADDRESS --coins LIFETIME_CAP [--ledger URL]
+  configure-sale-price --wallet RESERVE_KEY [--ledger URL]  (1 coin = 0.5 USDT; configuration only)
   suspend-sales --wallet RESERVE_KEY [--ledger URL]
   authorize-starter-grants --wallet RESERVE_KEY --coins LIFETIME_CAP [--ledger URL]
   suspend-starter-grants --wallet RESERVE_KEY [--ledger URL]
@@ -55,6 +56,7 @@ Custom genesis files default to http://127.0.0.1:8787. Strata defaults to http:/
 
 const flags = {
   'authorize-sales':['wallet','authority','coins','ledger','genesis'],
+  'configure-sale-price':['wallet','ledger','genesis'],
   'suspend-sales':['wallet','ledger','genesis'],
   'authorize-starter-grants':['wallet','coins','ledger','genesis'],
   'suspend-starter-grants':['wallet','ledger','genesis'],
@@ -306,11 +308,20 @@ async function writeCommand(command,v,wallet,ledger,resolveLedger,directory,gene
   let details;
   if (command === 'transfer') {
     details = {to:address(required(v,'to')),amount:parseCoins(required(v,'coins'))};
+  } else if (command==='configure-sale-price') {
+    if (wallet.address!==DISTRIBUTION_RESERVE.address || state.chainId!==MAINNET.chainId || state.networkStage!=='mainnet') {
+      throw Error('The public mainnet reserve wallet is required to configure the sale price');
+    }
+    if (state.salePrice?.payload.terms===SALE_PRICE_TERMS) {
+      return print({alreadyConfigured:true,terms:SALE_PRICE_TERMS,verifiedHeight:state.height});
+    }
+    details={terms:SALE_PRICE_TERMS};
   } else if (command === 'authorize-sales' || command === 'suspend-sales') {
     if (state.chainId!==DISTRIBUTION_RESERVE.chainId || wallet.address!==DISTRIBUTION_RESERVE.address) {
       throw Error('The official reserve wallet is required to change the sale mandate');
     }
-    details=command==='authorize-sales' ? {authority:address(required(v,'authority')),cap:parseCoins(required(v,'coins')),terms:SALE_TERMS} : {};
+    details=command==='authorize-sales' ? {authority:address(required(v,'authority')),cap:parseCoins(required(v,'coins')),
+      terms:state.salePrice?.payload.terms ?? SALE_TERMS} : {};
   } else if (command==='authorize-starter-grants' || command==='suspend-starter-grants') {
     if (state.chainId!==MAINNET.chainId || state.networkStage!=='mainnet' || wallet.address!==DISTRIBUTION_RESERVE.address) {
       throw Error('The public mainnet reserve wallet is required to change the starter grant budget');

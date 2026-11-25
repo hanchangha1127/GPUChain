@@ -6,6 +6,7 @@ import { createSalesRoute } from '../hosting/sites/sales.mjs';
 import { MERCHANT } from '../hosting/sites/usdt.mjs';
 import { commitHostedTransaction, prepareSalesRetirement, retirementGuard } from '../hosting/sites/sale-holds.mjs';
 import { DISTRIBUTION_RESERVE as reserve } from '../src/ledger.mjs';
+import { SALE_TERMS, SALE_PRICE_TERMS } from '../src/sale-policy.mjs';
 
 const migration=readFileSync(new URL('../hosting/sites/drizzle/0001_sales.sql',import.meta.url),'utf8');
 const scannerMigration=readFileSync(new URL('../hosting/sites/drizzle/0002_sale_scan_liveness.sql',import.meta.url),'utf8');
@@ -25,14 +26,14 @@ function fixture(t) {
   }};
   const env={DB:db,USDT_SWEEP_TOKEN:secret,USDT_ETH_START_BLOCK:'100',USDT_ETH_RPC_URLS:'["https://a.example","https://b.example"]'};
   const f={sqlite,db,env,healthy:true,enabled:true,inventoryNano:'1000000',deliveries:0,scan:'empty',failSettle:false,
-    sequence:0,lastPaymentId:null,retired:false};
+    sequence:0,lastPaymentId:null,retired:false,priceTerms:SALE_PRICE_TERMS};
   function proof(order) {
     return {chainId:1,txHash,eventId:'eip155:1:'+txHash+':0',payer:order.payer,to:order.gpuAddress,
       amountMicro:order.amountMicro,blockNumber:'103',blockHash:'0x'+'b'.repeat(64),blockTimestamp:String(Math.floor(order.createdAt/1000)),
       merchant:MERCHANT,logIndex:'0'};
   }
-  const dependencies={verifyQuote:async q=>{assert.equal(q.signature,'fixture');},
-    inventory:async()=>({inventoryNano:f.inventoryNano,enabled:f.enabled,networkStage:f.stage ?? 'mainnet',saleSequence:f.sequence,
+  const dependencies={verifyQuote:async q=>{assert.equal(q.signature,'fixture');},readPrice:async()=>f.priceTerms,
+    inventory:async()=>({inventoryNano:f.inventoryNano,enabled:f.enabled,networkStage:f.stage ?? 'mainnet',saleSequence:f.sequence,priceTerms:f.priceTerms,
       ledgerSalePaymentId:f.lastPaymentId,bootstrapTip:f.retired?null:sqlite.prepare('SELECT tip FROM ledger_head WHERE id=1').get().tip,
       mandateRemainingNano:f.inventoryNano,quorumEscrowSupported:f.quorum,quorumFence:f.quorum?'retired:authority':null,
       freeOnChainNano:f.inventoryNano}),
@@ -49,7 +50,7 @@ function fixture(t) {
     settle:async(_env,_db,order)=>{
       if(f.failSettle)throw Error(typeof f.failSettle==='string'?f.failSettle:'simulated restart');
       assert.equal(order.paymentId,'eip155:1:'+txHash+':0');
-      assert.equal(order.amountNano,(BigInt(order.usdtMicros)*10000n).toString());
+      assert.equal(order.amountNano,(BigInt(order.usdtMicros)*(order.terms===SALE_PRICE_TERMS?2000n:10000n)).toString());
       f.deliveries++;
       return {sequence:1,tip:'d'.repeat(64),height:8};
     }
@@ -62,17 +63,23 @@ function fixture(t) {
       headers,body:body===undefined?undefined:JSON.stringify(body)});
     const res=await route(req,env,path+name);return {code:res.status,value:await res.json()};
   };
-  f.quote=(who='1',amountMicro='60')=>({chainId:1,payer:'0x'+who.repeat(40),gpuAddress:who.repeat(64),
+  f.quote=(who='1',amountMicro='300')=>({chainId:1,terms:SALE_PRICE_TERMS,payer:'0x'+who.repeat(40),gpuAddress:who.repeat(64),
     amountMicro,requestId:who.repeat(32),issuedAt:Date.now()-1000,signature:'fixture'});
   f.due=()=>sqlite.exec('UPDATE sale_orders SET scan_after=0');
   return f;
 }
 
 test('paused checkout refuses new quotes on both chains and still reconciles earlier payments once',async t=>{
-  const f=fixture(t),order=(await f.call('quote',f.quote())).value;
+  const f=fixture(t),order=(await f.call('quote',f.quote('1','60'))).value;
+  // Existing D1 records predate explicit price terms and were accepted at ten coins.
+  f.sqlite.prepare("UPDATE sale_orders SET intent=json_remove(intent,'$.terms') WHERE id=?").run(order.id);
   f.pauseSales();
   const status=(await f.call('status')).value;
   assert.equal(status.paused,true);
+  assert.equal(status.priceConfigured,true);assert.equal(status.priceUsdt,'0.5');assert.equal(status.coinsPerUsdt,2);
+  f.priceTerms=undefined;
+  assert.equal((await f.call('status')).value.priceConfigured,false);
+  assert.equal((await f.call('status')).value.priceUsdt,null);
   assert.equal(status.merchant,null);
   for(const chainId of [1,56]) {
     assert.deepEqual(status.networks[chainId],{accepting:false,paymentReady:false,reason:'sales-paused'});
@@ -82,6 +89,7 @@ test('paused checkout refuses new quotes on both chains and still reconciles ear
   }
   const reserved=(await f.call('orders/'+order.id)).value;
   assert.equal(reserved.status,'reserved');
+  assert.equal(reserved.amountNano,'600000');assert.equal(reserved.coinsPerUsdt,10);
   for (const field of ['payTo','token','usdtUnits']) assert.equal(reserved[field],null);
   f.scan='paid';f.due();
   assert.equal((await f.call('tick',{},secret)).code,200);
@@ -99,7 +107,8 @@ test('quoting is fail-closed, idempotent, and atomic against concurrent inventor
   assert.deepEqual(results.map(x=>x.code).sort(),[201,409]);
   const winner=results[0].code===201?a:b;
   const created=results.find(r=>r.code===201).value;
-  assert.equal(created.startBlock,'102');assert.equal(created.usdtUnits,'60');assert.equal(created.status,'reserved');
+  assert.equal(created.startBlock,'102');assert.equal(created.usdtUnits,'300');assert.equal(created.status,'reserved');
+  assert.equal(created.coinsPerUsdt,2);assert.equal(created.amountNano,'600000');
   assert.equal((await f.call('quote',winner)).value.id,created.id);
   assert.equal((await f.call('quote',{...winner,amountMicro:'1'})).code,409);
   assert.equal((await f.call('status')).value.inventoryNano,'400000');
@@ -143,7 +152,7 @@ test('a signed quote is paid by an unattended scanner; delivery survives retry a
   assert.equal(finished.status,'delivered');assert.equal(finished.ledgerHeight,8);assert.equal(finished.txHash,txHash);
   assert.equal((await f.call('claim',{orderId:order.id,txHash})).value.status,'delivered');
   assert.equal(f.deliveries,1);
-  assert.equal((await f.call('status')).value.inventoryNano,'970000'); // stale inventory must debit already delivered sales
+  assert.equal((await f.call('status')).value.inventoryNano,'994000'); // stale inventory must debit already delivered sales
   const q=f.quote('2','3');q.requestId='a'.repeat(32);
   const second=(await f.call('quote',q)).value;
   assert.equal((await f.call('claim',{orderId:second.id,txHash})).code,409);
@@ -170,9 +179,32 @@ function source() {
     saleMandate:{active:true,authority:'delegate',cap:1000000,spent:0},tip:'initial'};
 }
 
+test('mixed-rate reservations protect the original coin amounts and hold back spending-mandate rotation',async t=>{
+  const f=fixture(t),state=source();
+  const old=(await f.call('quote',f.quote('1','60'))).value;
+  f.sqlite.prepare("UPDATE sale_orders SET intent=json_remove(intent,'$.terms') WHERE id=?").run(old.id);
+  const fresh=await f.call('quote',f.quote('2','100'));
+  assert.equal(fresh.code,201);
+  assert.equal(fresh.value.amountNano,'200000');
+  assert.equal((await f.call('status')).value.reservedNano,'800000');
+  const {terms,...unsignedLegacy}=f.quote('3','1');
+  assert.equal((await f.call('quote',unsignedLegacy)).code,400);
+  const legacy={...state,saleMandate:{...state.saleMandate,terms:SALE_TERMS}};
+  const switched={...legacy,tip:'next',saleMandate:{...legacy.saleMandate,terms:SALE_PRICE_TERMS}};
+  await assert.rejects(commitHostedTransaction(f.db,legacy,switched,'{}','authorize-sales'),/reserved/);
+  // The informational price configuration neither alters nor blocks this reservation.
+  const configured={...legacy,tip:'price-only'};
+  await commitHostedTransaction(f.db,legacy,configured,'{}','configure-sale-price');
+  await assert.rejects(commitHostedTransaction(f.db,configured,{...configured,tip:'spent',balances:{[reserve.address]:799999}},
+    '{}','transfer'),/reserved/);
+  f.sqlite.prepare("UPDATE sale_orders SET state='expired' WHERE id=?").run(old.id);
+  assert.equal((await f.call('status')).value.reservedNano,'200000');
+  await commitHostedTransaction(f.db,configured,switched,'{}','authorize-sales');
+});
+
 test('the ledger checks held inventory and mandate headroom at commit; unreserved nanocoins remain spendable',async t=>{
   const f=fixture(t),state=source();
-  const quote=(await f.call('quote',f.quote('1','60'))).value;
+  const quote=(await f.call('quote',f.quote())).value;
   assert.equal((await f.call('status')).value.reservedNano,'600000');
   const transfer=(balance,tip='next')=>({...state,tip,balances:{[reserve.address]:balance}});
   await assert.rejects(commitHostedTransaction(f.db,state,transfer(599999),'{}','transfer'),/reserved/);
@@ -226,7 +258,7 @@ test('quorum checkout exposes payment only after an authenticated hold, and free
   const f=fixture(t);
   f.retired=true;f.quorum=true;f.sqlite.exec("UPDATE ledger_head SET tip='retired:authority' WHERE id=1");
   const status=(await f.call('status')).value;
-  assert.equal(status.intakeMode,'validator');assert.equal(status.coinsPerUsdt,10);assert.equal(status.priceUsdt,'0.1');
+  assert.equal(status.intakeMode,'validator');assert.equal(status.coinsPerUsdt,2);assert.equal(status.priceUsdt,'0.5');
   const q=f.quote(),pending=(await f.call('quote',q)).value;
   assert.equal(pending.status,'holding');assert.equal(pending.payTo,null);
   assert.equal(pending.amountNano,'600000');assert.equal(f.acquired.amountNano,'600000');

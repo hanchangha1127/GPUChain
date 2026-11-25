@@ -2,6 +2,7 @@ export const storeLocales = ['en','ko','ja','zh-CN','fr'];
 export const storeMessages = {
   creditsTitle:['GPUChain starter coins','GPUChain 기본 지급 코인','GPUChain 初回コイン','GPUChain 初始代币','Coins de bienvenue GPUChain'],
   salesPaused:['USDT payments temporarily paused','USDT 결제 일시 중단','USDT 決済は一時停止中です','USDT 支付暂时停用','Paiements en USDT temporairement suspendus'],
+  configuredPrice:['Configured price · 1 GPUChain coin = {usdt} USDT · 1 USDT = {coins} GPUChain coins','설정 단가 · GPUChain 1코인 = {usdt} USDT · 1 USDT = GPUChain {coins}코인','設定価格 · 1 GPUChain コイン = {usdt} USDT · 1 USDT = {coins} GPUChain コイン','设定价格 · 1 枚 GPUChain 代币 = {usdt} USDT · 1 USDT = {coins} 枚 GPUChain 代币','Prix configuré · 1 coin GPUChain = {usdt} USDT · 1 USDT = {coins} coins GPUChain'],
   salesPausedHelp:['Payments are paused while the terms of use are being prepared. You can still check an existing order or a transfer you have already sent.','이용약관을 준비하는 동안 USDT 결제를 일시 중단했습니다. 기존 주문과 이미 보낸 송금의 상태는 계속 확인할 수 있습니다.','利用規約の準備中のため、USDT 決済を一時停止しています。既存の注文や送金済みの取引の状況は引き続き確認できます。','使用条款正在准备中，USDT 支付已暂时停用。您仍可查询已有订单和已发送转账的状态。','Les paiements sont suspendus pendant la préparation des conditions d’utilisation. Vous pouvez toujours consulter une commande existante ou vérifier un transfert déjà effectué.'],
   unpaidPaused:['Order registered · Payments paused','주문 등록됨 · 결제 일시 중단','注文登録済み · 決済一時停止中','订单已登记 · 支付已暂停','Commande enregistrée · Paiements suspendus'],
   closeOrder:['Close order details','주문 정보 닫기','注文の詳細を閉じる','关闭订单详情','Fermer le détail de la commande'],
@@ -40,7 +41,7 @@ export const storeMessages = {
   refresh:['Refresh order','주문 새로고침','注文を更新','刷新订单','Actualiser la commande'],
   recover:['Recover an order by ID','주문 번호로 복구','ID で注文を復元','通过订单号恢复订单','Récupérer une commande par son identifiant'],
   restore:['Open order','주문 열기','注文を開く','打开订单','Ouvrir la commande'],
-  orderLine:['{network} · Pay {usdt} USDT · Receive {coins} GPUChain coins · Expires {expiry}','{network} · 결제 {usdt} USDT · 받을 금액 {coins} GPUChain 코인 · 기한 {expiry}','{network} · 支払額 {usdt} USDT · 受取額 {coins} GPUChain コイン · 有効期限 {expiry}','{network} · 支付 {usdt} USDT · 获得 {coins} 枚 GPUChain 代币 · 截止 {expiry}','{network} · À payer : {usdt} USDT · À recevoir : {coins} coins GPUChain · Expire le {expiry}'],
+  orderLine:['{network} · Original order of {coins} GPUChain coins for {usdt} USDT · Deadline {expiry}','{network} · 주문 당시 금액 {usdt} USDT / {coins} GPUChain 코인 · 기한 {expiry}','{network} · 注文時の金額 {usdt} USDT / {coins} GPUChain コイン · 期限 {expiry}','{network} · 原订单金额 {usdt} USDT / {coins} 枚 GPUChain 代币 · 截止 {expiry}','{network} · Commande initiale de {coins} coins GPUChain pour {usdt} USDT · Échéance {expiry}'],
   paid:['Payment confirmed · Awaiting delivery','입금 확인 · 지급 대기','入金確認済み · 付与待ち','付款已确认 · 等待发放','Paiement confirmé · Livraison en attente'],
   pending:['Checking payment','확인 중','確認中','核实中','Vérification en cours'],
   delivering:['Delivering coins','지급 중','付与処理中','发放中','Livraison en cours'],

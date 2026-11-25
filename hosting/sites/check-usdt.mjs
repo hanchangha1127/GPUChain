@@ -9,6 +9,7 @@ import { checkPayment, checkRpcHealth, findQuotePayment, MERCHANT, NETWORKS, quo
   transferData, verifyClaimSignature, verifyQuoteSignature } from './usdt.mjs';
 import { checkoutPage, checkoutScript } from './checkout.mjs';
 import { storeLocales,storeMessages } from './store-i18n.mjs';
+import { SALE_PRICE_TERMS } from '../../src/sale-policy.mjs';
 import { ledgerPage,ledgerScript } from './ledger-page.mjs';
 
 const artifactPath=process.env.GPUCHAIN_WORKER_ARTIFACT;
@@ -22,8 +23,8 @@ const rpcUrls=['https://first.invalid','https://second.invalid'];
 const topic='0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const time=1_700_000_000;
 const word=n=>'0x'+BigInt(n).toString(16).padStart(64,'0');
-function fixture(chainId,signText=quoteMessage) {
-  const claim={chainId,payer,gpuAddress:'a'.repeat(64),amountMicro:'1234567',
+function fixture(chainId,signText=quoteMessage,{legacy=false}={}) {
+  const claim={...(legacy?{}:{terms:SALE_PRICE_TERMS}),chainId,payer,gpuAddress:'a'.repeat(64),amountMicro:'1234567',
     requestId:'e'.repeat(32),issuedAt:time*1000,orderId:'order-public-123456',txHash:word(800),
     createdAt:time*1000,expiresAt:(time+1800)*1000,startBlock:'25'};
   const bytes=utf8ToBytes(signText(claim));
@@ -65,7 +66,8 @@ for (const id of [1,56]) {
   test('paid quote and independent finalized scanning on chain '+id,async()=>{
     const {claim,rpc}=fixture(id),options={rpcUrls,fetcher:rpc(),minBlock:'25'};
     assert.equal(await verifyQuoteSignature(claim),payer);
-    assert.match(quoteMessage(claim),/Price: 1 USDT = 10 GPUChain coins\nGPUChain nanocoins to receive: 12345670000\n/);
+    assert.match(quoteMessage(claim),/^GPUChain USDT purchase quote v3\n/);
+    assert.match(quoteMessage(claim),/Price: 1 USDT = 2 GPUChain coins\nGPUChain nanocoins to receive: 2469134000\n/);
     assert.equal(await verifyClaimSignature(claim),payer);
     const pay=await checkPayment(claim,options);
     assert.equal(pay.eventId,'eip155:'+id+':'+claim.txHash+':3');
@@ -79,13 +81,27 @@ for (const id of [1,56]) {
   });
 }
 
-test('legacy price signatures and amounts exceeding the reserve at ten coins per USDT are rejected',async()=>{
-  const legacy=q=>quoteMessage(q).replace('quote v2','quote v1')
+test('historical orders retain their 10:1 signature and cannot authorize a new 2:1 quote',async()=>{
+  const {claim,rpc}=fixture(1,quoteMessage,{legacy:true});
+  assert.match(quoteMessage(claim),/^GPUChain USDT purchase quote v2\n/);
+  assert.match(quoteMessage(claim),/Price: 1 USDT = 10 GPUChain coins\nGPUChain nanocoins to receive: 12345670000\n/);
+  assert.equal(await verifyClaimSignature(claim),payer);
+  assert.equal((await checkPayment(claim,{rpcUrls,fetcher:rpc(),minBlock:'25'})).amountMicro,'1234567');
+  assert.equal((await findQuotePayment(claim,{rpcUrls,fetcher:rpc(),minBlock:'25'})).matches.length,1);
+  await assert.rejects(verifyQuoteSignature(claim));
+  await assert.rejects(verifyQuoteSignature({...claim,terms:SALE_PRICE_TERMS}));
+  const {terms,...missing}=fixture(1).claim;
+  await assert.rejects(verifyClaimSignature(missing));
+  await assert.rejects(verifyClaimSignature({...claim,amountMicro:'100000000000000001'}),/amount/);
+});
+
+test('obsolete price encodings and amounts exceeding the reserve at two coins per USDT are rejected',async()=>{
+  const legacy=q=>quoteMessage(q).replace('quote v3','quote v1')
     .split('\n').filter(line=>!line.startsWith('Price:')&&!line.startsWith('GPUChain nanocoins to receive:')).join('\n');
-  const splitPrice=q=>quoteMessage(q).replace('1 USDT = 10 GPUChain coins','1 USDT = 1 GPUChain coin');
+  const splitPrice=q=>quoteMessage(q).replace('1 USDT = 2 GPUChain coins','1 USDT = 1 GPUChain coin');
   await assert.rejects(verifyQuoteSignature(fixture(1,legacy).claim),/signature/i);
   await assert.rejects(verifyQuoteSignature(fixture(56,splitPrice).claim),/signature/i);
-  await assert.rejects(verifyQuoteSignature({...fixture(1).claim,amountMicro:'100000000000000001'}),/amount/);
+  await assert.rejects(verifyQuoteSignature({...fixture(1).claim,amountMicro:'500000000000000001'}),/amount/);
 });
 
 test('a captured quote cannot change the payer, recipient, amount, chain or order nonce',async()=>{
@@ -136,6 +152,7 @@ test('public checkout uses a same-origin script and explicit user wallet actions
   assert.match(html,/<html lang="en">/);assert.match(html,/Claim free inference coins/);
   assert.doesNotMatch(html,/1,000 free inference coins|Claim 100 starter coins/);
   assert.match(html,/USDT payments temporarily paused/);
+  assert.match(html,/id="salePrice" hidden/);
   for(const lang of storeLocales)assert.ok(html.includes('value="'+lang+'"'));
   for(const key of Object.keys(storeMessages)){
     const values=storeMessages[key];assert.equal(values.length,5,key);
@@ -164,7 +181,7 @@ test('ledger localizes the stage and the authority independently and shares the 
     assert.equal(saved.get('gpuchain.wallet.language'),lng);assert.equal(height.textContent,BigInt(1203).toLocaleString(lng));}
 });
 
-async function openCreditPage(fetcher,{saved=new Map(),search=''}={}) {
+async function openCreditPage(fetcher,{saved=new Map(),search='',salesStatus={accepting:false,paused:true,priceConfigured:false}}={}) {
   const fields=new Map(), root={}, nodes=['starterTitle','salesPaused'].map(i18n=>({dataset:{i18n}}));
   const get=id=>{
     if(!fields.has(id)) fields.set(id,{value:'',events:{},addEventListener(type,fn){this.events[type]=fn;}});
@@ -173,7 +190,8 @@ async function openCreditPage(fetcher,{saved=new Map(),search=''}={}) {
   vm.runInNewContext(await (await asset('/buy.js')).text(),{
     document:{documentElement:root,getElementById:get,querySelectorAll:()=>nodes,addEventListener(){}},
     location:{search},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
-    fetch:fetcher,URLSearchParams,AbortSignal,Date,setInterval:()=>{}
+    fetch:(path,options)=>path==='/v1/sales/status' ? Response.json(salesStatus) : fetcher(path,options),
+    URLSearchParams,AbortSignal,Date,setInterval:()=>{}
   });
   await new Promise(resolve=>setImmediate(resolve));
   return {get,root,nodes};
@@ -271,10 +289,33 @@ test('suspended checkout can recover existing orders and verify an already sent 
     } else assert.equal(path,'/v1/sales/orders/'+id);
     return Response.json({id,status,chainId:56,payer,gpuAddress,amountMicro:'1000000',amountNano:'10000000000',
       expiresAt:time*1000,txHash:status==='delivered'?txHash:null});
-  });
+  },{salesStatus:{accepting:false,paused:true,priceConfigured:true,priceUsdt:'0.5',coinsPerUsdt:2}});
   get('restoreId').value=id;await get('restore').onclick();
   assert.equal(get('orderId').textContent,id);assert.equal(get('orderStatus').textContent,storeMessages.unpaidPaused[0]);
+  assert.match(get('terms').textContent,/10 GPUChain coins for 1 USDT/);
+  assert.match(get('salePrice').textContent,/1 GPUChain coin = 0\.5 USDT · 1 USDT = 2 GPUChain coins/);
   get('hash').value=txHash;await get('submitHash').onclick();
   assert.equal(get('hashCheck').hidden,true);assert.match(get('orderStatus').textContent,/Delivered/);
   assert.deepEqual(requests.map(([verb])=>verb),['GET','POST','GET']);
+});
+
+test('only the confirmed paused sale price is shown in all five languages',async()=>{
+  const fetcher=async(path,options)=>{
+    assert.equal(options.method,'GET');assert.equal(path,'/v1/starter/status');
+    return Response.json({active:false,coins:null,reason:'program_inactive'});
+  };
+  const valid={paused:true,accepting:false,priceConfigured:true,priceUsdt:'0.5',coinsPerUsdt:2};
+  const {get}=await openCreditPage(fetcher,{salesStatus:valid});
+  const price=get('salePrice');
+  for (const [i,lang] of storeLocales.entries()) {
+    get('language').events.change({target:{value:lang}});
+    assert.equal(price.hidden,false);
+    assert.equal(price.textContent,storeMessages.configuredPrice[i]
+      .replace('{usdt}',(0.5).toLocaleString(lang)).replace('{coins}','2'));
+  }
+  for (const state of [{...valid,priceConfigured:false},{...valid,accepting:true},
+    {...valid,priceUsdt:'0.1',coinsPerUsdt:10}]) {
+    const page=await openCreditPage(fetcher,{salesStatus:state});
+    assert.equal(page.get('salePrice').hidden,true);
+  }
 });
