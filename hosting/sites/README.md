@@ -20,7 +20,7 @@ The bootstrap operator authorizes public providers and validator candidates. The
 
 ## Hosted state
 
-The reserve owner records the sale price with `node src/cli.mjs configure-sale-price --wallet RESERVE_WALLET`. The signed configuration sets 2 coins per USDT (0.5 USDT per coin). After deployment, verify the signed checkpoint, the displayed price, and the paused status of both payment networks at `/v1/sales/status`. Existing paid orders use their original terms.
+The reserve owner records the sale price with `node src/cli.mjs configure-sale-price --wallet RESERVE_WALLET`. The signed configuration sets 2 coins per USDT (0.5 USDT per coin). After deployment, verify the signed checkpoint and both networks’ paused status at `/v1/sales/status`. The storefront shows starter grants, the payment pause notice and existing order lookup. Existing paid orders use their original terms.
 
 The starter grant is independent of the sale mandate. The reserve owner signs `node src/cli.mjs authorize-starter-grants --wallet RESERVE_WALLET --coins 1000000000`. Sites can then move exactly 1,000 existing reserve coins to each eligible recorded address once. `GET /v1/starter/status?address=PUBLIC_ADDRESS` checks eligibility, and `POST /v1/starter/claim` accepts a JSON object with a single `address`. Refreshing the page or submitting the same claim concurrently can credit the address only once. Use `suspend-starter-grants` to close new grants. Previous claims continue counting toward the lifetime budget.
 

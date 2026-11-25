@@ -1,5 +1,4 @@
-import { SALE_CONFIG } from './usdt.mjs';
-import { SALE_PRICE_COINS_PER_USDT, SALE_PRICE_USDT_PER_COIN } from '../../src/sale-policy.mjs';
+import { DISTRIBUTION_RESERVE } from '../../src/reserve-policy.mjs';
 import { storeLocales, storeMessages } from './store-i18n.mjs';
 
 export function checkoutPage() {
@@ -35,7 +34,6 @@ header{gap:1rem;flex-wrap:wrap}header nav{display:flex;align-items:center;gap:1r
 <button type="button" id="starterCheck" disabled>${label('starterCheck')}</button>
 </section>
 <section class="pending" aria-labelledby="salesHeading"><h2 id="salesHeading">${label('salesPaused')}</h2>
-<p id="salePrice" hidden></p>
 <p>${label('salesPausedHelp')}</p>
 <details><summary>${label('recover')}</summary><label for="restoreId">${label('orderId')}</label>
 <input id="restoreId" class="mono" autocomplete="off" spellcheck="false" maxlength="64"><button id="restore">${label('restore')}</button></details>
@@ -54,14 +52,13 @@ header{gap:1rem;flex-wrap:wrap}header nav{display:flex;align-items:center;gap:1r
 }
 
 // Serialized by checkoutScript. This function has no closure over server secrets or helpers.
-function checkout(genesis,locales,strings,configuredPrice) {
+function checkout(genesis,locales,strings) {
   const el=id=>document.getElementById(id);
   const storageKey='gpuchain-usdt-order-'+genesis;
   const txt=(id,s)=>{el(id).textContent=s;};
   const hashValid=h=>typeof h==='string' && /^0x[0-9a-f]{64}$/.test(h);
   const idValid=i=>typeof i==='string' && /^[0-9a-f]{64}$/.test(i);
   let order=null, orderLookup=0, pendingHash='', busy=false, timerBusy=false;
-  let salePrice=null;
   const languageKey='gpuchain.wallet.language';
   let lang='en', noticeKey='';
   const t=(key,vars={})=>(strings[key]?.[locales.indexOf(lang)] ?? strings.failed[0])
@@ -136,20 +133,6 @@ function checkout(genesis,locales,strings,configuredPrice) {
     return 'failed';
   }
   const divider=()=>new Intl.NumberFormat(lang).formatToParts(1.1).find(p=>p.type==='decimal')?.value || '.';
-  function renderSalePrice() {
-    el('salePrice').hidden=!salePrice;
-    if (salePrice) txt('salePrice',t('configuredPrice',{
-      usdt:salePrice.priceUsdt.replace('.',divider()),coins:salePrice.coinsPerUsdt.toLocaleString(lang)
-    }));
-  }
-  async function checkSalePrice() {
-    try {
-      const status=await api('/v1/sales/status');
-      if(status?.paused===true && status.accepting===false && status.priceConfigured===true &&
-        status.priceUsdt===configuredPrice.priceUsdt && status.coinsPerUsdt===configuredPrice.coinsPerUsdt) salePrice=status;
-    } catch { /* The suspension notice is already visible. */ }
-    renderSalePrice();
-  }
   function setLanguage(value) {
     lang=locales.includes(value)?value:'en';
     document.documentElement.lang=lang;
@@ -157,7 +140,7 @@ function checkout(genesis,locales,strings,configuredPrice) {
     el('language').value=lang;
     for(const node of document.querySelectorAll('[data-i18n]')) node.textContent=t(node.dataset.i18n);
     el('starterAddress').placeholder=t('gpuHint');
-    notice(noticeKey);render();renderGrant();renderSalePrice();
+    notice(noticeKey);render();renderGrant();
   }
   function decimal(s,d=6) {
     const n=BigInt(s), f=10n**BigInt(d), rest=(n%f).toString().padStart(d,'0').replace(/0+$/,'');
@@ -246,7 +229,6 @@ function checkout(genesis,locales,strings,configuredPrice) {
     let saved='en';
     try {saved=localStorage.getItem(languageKey)||'en';} catch {}
     setLanguage(saved);
-    checkSalePrice();
     el('language').addEventListener('change',event=>{
       setLanguage(event.target.value);
       try {localStorage.setItem(languageKey,lang);} catch {}
@@ -274,8 +256,7 @@ function checkout(genesis,locales,strings,configuredPrice) {
 }
 
 export function checkoutScript() {
-  const price={coinsPerUsdt:SALE_PRICE_COINS_PER_USDT,priceUsdt:SALE_PRICE_USDT_PER_COIN};
-  const args=[SALE_CONFIG.genesis,storeLocales,storeMessages,price].map(value=>JSON.stringify(value)).join(',');
+  const args=[DISTRIBUTION_RESERVE.chainId,storeLocales,storeMessages].map(value=>JSON.stringify(value)).join(',');
   const js='('+checkout.toString()+')('+args+');';
   return new Response(js,{headers:{'content-type':'text/javascript; charset=utf-8',
     'cache-control':'no-store','x-content-type-options':'nosniff'}});

@@ -2,7 +2,6 @@ export const storeLocales = ['en','ko','ja','zh-CN','fr'];
 export const storeMessages = {
   creditsTitle:['GPUChain starter coins','GPUChain 기본 지급 코인','GPUChain 初回コイン','GPUChain 初始代币','Coins de bienvenue GPUChain'],
   salesPaused:['USDT payments temporarily paused','USDT 결제 일시 중단','USDT 決済は一時停止中です','USDT 支付暂时停用','Paiements en USDT temporairement suspendus'],
-  configuredPrice:['Configured price · 1 GPUChain coin = {usdt} USDT · 1 USDT = {coins} GPUChain coins','설정 단가 · GPUChain 1코인 = {usdt} USDT · 1 USDT = GPUChain {coins}코인','設定価格 · 1 GPUChain コイン = {usdt} USDT · 1 USDT = {coins} GPUChain コイン','设定价格 · 1 枚 GPUChain 代币 = {usdt} USDT · 1 USDT = {coins} 枚 GPUChain 代币','Prix configuré · 1 coin GPUChain = {usdt} USDT · 1 USDT = {coins} coins GPUChain'],
   salesPausedHelp:['Payments are paused while the terms of use are being prepared. You can still check an existing order or a transfer you have already sent.','이용약관을 준비하는 동안 USDT 결제를 일시 중단했습니다. 기존 주문과 이미 보낸 송금의 상태는 계속 확인할 수 있습니다.','利用規約の準備中のため、USDT 決済を一時停止しています。既存の注文や送金済みの取引の状況は引き続き確認できます。','使用条款正在准备中，USDT 支付已暂时停用。您仍可查询已有订单和已发送转账的状态。','Les paiements sont suspendus pendant la préparation des conditions d’utilisation. Vous pouvez toujours consulter une commande existante ou vérifier un transfert déjà effectué.'],
   unpaidPaused:['Order registered · Payments paused','주문 등록됨 · 결제 일시 중단','注文登録済み · 決済一時停止中','订单已登记 · 支付已暂停','Commande enregistrée · Paiements suspendus'],
   closeOrder:['Close order details','주문 정보 닫기','注文の詳細を閉じる','关闭订单详情','Fermer le détail de la commande'],

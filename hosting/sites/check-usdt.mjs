@@ -15,7 +15,7 @@ import { ledgerPage,ledgerScript } from './ledger-page.mjs';
 const artifactPath=process.env.GPUCHAIN_WORKER_ARTIFACT;
 const artifact=artifactPath?(await import(pathToFileURL(artifactPath))).default:null;
 const asset=path=>artifact?artifact.fetch(new Request('https://store.invalid'+path),{}):
-  (path==='/'?checkoutPage():checkoutScript());
+  (path==='/buy.js'?checkoutScript():checkoutPage());
 
 const secret=new Uint8Array(32);secret[31]=1; // published test scalar, never funded
 const payer='0x7e5f4552091a69125d5dfcb7b8c2659029395bdf';
@@ -152,7 +152,7 @@ test('public checkout uses a same-origin script and explicit user wallet actions
   assert.match(html,/<html lang="en">/);assert.match(html,/Claim free inference coins/);
   assert.doesNotMatch(html,/1,000 free inference coins|Claim 100 starter coins/);
   assert.match(html,/USDT payments temporarily paused/);
-  assert.match(html,/id="salePrice" hidden/);
+  assert.doesNotMatch(html,/id="salePrice"/);
   for(const lang of storeLocales)assert.ok(html.includes('value="'+lang+'"'));
   for(const key of Object.keys(storeMessages)){
     const values=storeMessages[key];assert.equal(values.length,5,key);
@@ -181,7 +181,7 @@ test('ledger localizes the stage and the authority independently and shares the 
     assert.equal(saved.get('gpuchain.wallet.language'),lng);assert.equal(height.textContent,BigInt(1203).toLocaleString(lng));}
 });
 
-async function openCreditPage(fetcher,{saved=new Map(),search='',salesStatus={accepting:false,paused:true,priceConfigured:false}}={}) {
+async function openCreditPage(fetcher,{saved=new Map(),search=''}={}) {
   const fields=new Map(), root={}, nodes=['starterTitle','salesPaused'].map(i18n=>({dataset:{i18n}}));
   const get=id=>{
     if(!fields.has(id)) fields.set(id,{value:'',events:{},addEventListener(type,fn){this.events[type]=fn;}});
@@ -190,11 +190,11 @@ async function openCreditPage(fetcher,{saved=new Map(),search='',salesStatus={ac
   vm.runInNewContext(await (await asset('/buy.js')).text(),{
     document:{documentElement:root,getElementById:get,querySelectorAll:()=>nodes,addEventListener(){}},
     location:{search},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
-    fetch:(path,options)=>path==='/v1/sales/status' ? Response.json(salesStatus) : fetcher(path,options),
+    fetch:fetcher,
     URLSearchParams,AbortSignal,Date,setInterval:()=>{}
   });
   await new Promise(resolve=>setImmediate(resolve));
-  return {get,root,nodes};
+  return {get,root,nodes,fields};
 }
 
 test('starter form verifies existing addresses, excludes stale lookups and submits only one explicit claim',async()=>{
@@ -289,33 +289,36 @@ test('suspended checkout can recover existing orders and verify an already sent 
     } else assert.equal(path,'/v1/sales/orders/'+id);
     return Response.json({id,status,chainId:56,payer,gpuAddress,amountMicro:'1000000',amountNano:'10000000000',
       expiresAt:time*1000,txHash:status==='delivered'?txHash:null});
-  },{salesStatus:{accepting:false,paused:true,priceConfigured:true,priceUsdt:'0.5',coinsPerUsdt:2}});
+  });
   get('restoreId').value=id;await get('restore').onclick();
   assert.equal(get('orderId').textContent,id);assert.equal(get('orderStatus').textContent,storeMessages.unpaidPaused[0]);
   assert.match(get('terms').textContent,/10 GPUChain coins for 1 USDT/);
-  assert.match(get('salePrice').textContent,/1 GPUChain coin = 0\.5 USDT · 1 USDT = 2 GPUChain coins/);
   get('hash').value=txHash;await get('submitHash').onclick();
   assert.equal(get('hashCheck').hidden,true);assert.match(get('orderStatus').textContent,/Delivered/);
   assert.deepEqual(requests.map(([verb])=>verb),['GET','POST','GET']);
 });
 
-test('only the confirmed paused sale price is shown in all five languages',async()=>{
-  const fetcher=async(path,options)=>{
-    assert.equal(options.method,'GET');assert.equal(path,'/v1/starter/status');
-    return Response.json({active:false,coins:null,reason:'program_inactive'});
-  };
-  const valid={paused:true,accepting:false,priceConfigured:true,priceUsdt:'0.5',coinsPerUsdt:2};
-  const {get}=await openCreditPage(fetcher,{salesStatus:valid});
-  const price=get('salePrice');
+test('paused public pages omit the configured exchange rate in all five languages',async()=>{
+  const advertisedRate=/0[.,]5\s*USDT|1\s*USDT\s*=|configuredPrice/i;
+  for (const path of ['/','/buy','/buy.js']) {
+    const response=await asset(path);
+    assert.equal(response.status,200);
+    assert.doesNotMatch(await response.text(),advertisedRate);
+  }
+  const requests=[];
+  const {get,fields,nodes}=await openCreditPage(async(path,{method})=>{
+    requests.push([method,path]);
+    if(path==='/v1/sales/status') return Response.json({
+      paused:true,accepting:false,priceConfigured:true,priceUsdt:'0.5',coinsPerUsdt:2
+    });
+    assert.equal(path,'/v1/starter/status');
+    return Response.json({active:true,coins:'1000',reason:null});
+  });
   for (const [i,lang] of storeLocales.entries()) {
     get('language').events.change({target:{value:lang}});
-    assert.equal(price.hidden,false);
-    assert.equal(price.textContent,storeMessages.configuredPrice[i]
-      .replace('{usdt}',(0.5).toLocaleString(lang)).replace('{coins}','2'));
+    assert.equal(nodes[1].textContent,storeMessages.salesPaused[i]);
+    assert.equal(get('starterClaim').textContent,storeMessages.starterClaimAmount[i].replace('{coins}',(1000).toLocaleString(lang)));
+    for (const field of [...nodes,...fields.values()]) assert.doesNotMatch(field.textContent??'',advertisedRate);
   }
-  for (const state of [{...valid,priceConfigured:false},{...valid,accepting:true},
-    {...valid,priceUsdt:'0.1',coinsPerUsdt:10}]) {
-    const page=await openCreditPage(fetcher,{salesStatus:state});
-    assert.equal(page.get('salePrice').hidden,true);
-  }
+  assert.deepEqual(requests,[['GET','/v1/starter/status']]);
 });
