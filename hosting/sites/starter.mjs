@@ -3,7 +3,7 @@ import { nextCheckpoint } from '../../src/checkpoint.mjs';
 import { addressFromPrivateKey, sign } from '../../src/crypto.mjs';
 import { DISTRIBUTION_RESERVE, spendableBalance } from '../../src/ledger.mjs';
 import { SALE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
-import { STARTER_GRANT_AMOUNT, knownStarterWallet, remainingStarterClaims, starterAddressEligible,
+import { STARTER_GRANT_AMOUNT, activeStarterMandate, knownStarterWallet, remainingStarterClaims, starterAddressEligible,
   starterClaimAmount, starterClaimHeight, starterGrantAmount } from '../../src/starter-grants.mjs';
 import { GRANT_HEAD_BYTES, commitHostedTransaction, heldMicroSql, holdArgs } from './sale-holds.mjs';
 import { readHostedLedger, quorumCommit } from './sale-settlement.mjs';
@@ -15,7 +15,7 @@ const failure=(code,status)=>response({error:code,code},status);
 const normalize=value=>typeof value==='string' && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null;
 
 async function statusFor(live,db,address) {
-  const {head}=live, state=head.state, mandate=state.starterMandate;
+  const {head}=live, state=head.state, mandate=activeStarterMandate(state);
   const authorized=state.chainId===DISTRIBUTION_RESERVE.chainId && state.networkStage==='mainnet' && mandate?.active===true;
   const active=authorized && starterGrantAmount(state)===STARTER_GRANT_AMOUNT;
   const height=address ? starterClaimHeight(state,address) : null;
@@ -99,7 +99,7 @@ export function createStarterRoute({read=readHostedLedger,commit=commitGrant}={}
         if (signer.address!==state.sequencer) return failure('unavailable',503);
         const payload={type:'starter-grant',chainId:state.chainId,from:signer.address,
           nonce:(state.nonces[signer.address]??0)+1,to:address,amount:STARTER_GRANT_AMOUNT,
-          mandateVersion:state.starterMandate.version};
+          mandateVersion:activeStarterMandate(state).version};
         try {
           const confirmed=await commit(live,db,{payload,signature:sign(key,payload)},signer);
           const height=starterClaimHeight(confirmed.head.state,address);

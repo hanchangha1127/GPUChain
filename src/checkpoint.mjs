@@ -2,7 +2,6 @@ import { hash, sign } from './crypto.mjs';
 import { applyBlock, createBlock } from './ledger.mjs';
 import { authenticateLegacy, checkpointProof, updatedEpochHashes } from './checkpoint-base.mjs';
 import { verifyConsensusCheckpoint } from './consensus.mjs';
-import { legacyStarterThrough, starterGrantAmount, STARTER_GRANT_AMOUNT } from './starter-grants.mjs';
 
 export function authenticate(checkpoint, chainId) {
   if (Object.hasOwn(checkpoint,'authority') || Object.hasOwn(checkpoint,'consensus')) {
@@ -21,24 +20,21 @@ export function verifyAdvance(prior,next) {
   if (prior.authority && (!next.authority || hash(next.authority) !== hash(prior.authority))) {
     throw Error('Consensus authority downgrade or conflict');
   }
-  if (old.starterMandate) {
-    if (!state.starterMandate || state.starterMandate.version<old.starterMandate.version ||
-      Object.entries(old.starterClaims ?? {}).some(([address,height])=>state.starterClaims?.[address]!==height) ||
-      Object.entries(state.starterClaims ?? {}).some(([address,height])=>
-        height<=old.height && old.starterClaims?.[address]!==height)) {
+  if (old.starterMandateV2 && hash(old.starterMandate ?? null)!==hash(state.starterMandate ?? null)) {
+    throw Error('Legacy starter history changed after cutover');
+  }
+  for (const [permission,registry] of [['starterMandate','starterClaims'],['starterMandateV2','starterClaimsV2']]) {
+    const before=old[permission],after=state[permission];
+    if ((before && (!after || after.version<before.version)) ||
+      Object.entries(old[registry] ?? {}).some(([address,height])=>state[registry]?.[address]!==height) ||
+      Object.entries(state[registry] ?? {}).some(([address,height])=>
+        height<=old.height && old[registry]?.[address]!==height)) {
       throw Error('Starter mandate or claim history rollback');
     }
-    if (state.starterMandate.version===old.starterMandate.version &&
-      (state.starterMandate.active!==old.starterMandate.active || state.starterMandate.cap!==old.starterMandate.cap ||
-        starterGrantAmount(state)!==starterGrantAmount(old))) {
+    if (before && after.version===before.version &&
+      (after.active!==before.active || after.cap!==before.cap ||
+       after.authorization?.payload.legacyThrough!==before.authorization?.payload.legacyThrough)) {
       throw Error('Conflicting starter grant permission');
-    }
-    if (starterGrantAmount(old)===STARTER_GRANT_AMOUNT) {
-      if (starterGrantAmount(state)!==STARTER_GRANT_AMOUNT || legacyStarterThrough(state)!==legacyStarterThrough(old)) {
-        throw Error('Starter grant rate or cutover rollback');
-      }
-    } else if (starterGrantAmount(state)===STARTER_GRANT_AMOUNT && legacyStarterThrough(state)<legacyStarterThrough(old)) {
-      throw Error('Starter grant cutover precedes an existing award');
     }
   }
   if (old.mainnetPromotion) {

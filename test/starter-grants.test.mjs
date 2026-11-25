@@ -8,7 +8,7 @@ import { applyQuorumTransaction, DISTRIBUTION_RESERVE as reserve, MAINNET, start
   starterMandateEffect, verifyStarterState } from '../src/ledger.mjs';
 import { knownStarterWallet, LEGACY_STARTER_GRANT_AMOUNT, LEGACY_STARTER_GRANT_PROTOCOL, MAX_STARTER_WALLETS,
   STARTER_AUTHORIZATION_V2, STARTER_GRANT_AMOUNT, STARTER_GRANT_PROTOCOL, starterClaimHeight,
-  legacyStarterThrough, remainingStarterClaims, starterClaimAmount, starterGrantAmount } from '../src/starter-grants.mjs';
+  activeStarterMandate, legacyStarterThrough, remainingStarterClaims, starterClaimAmount, starterGrantAmount } from '../src/starter-grants.mjs';
 
 // Exercise deterministic effects at the public chain ID without accessing any operational signing key.
 const buyer=generateWallet().address, other=generateWallet().address;
@@ -97,37 +97,45 @@ test('signed v2 denomination preserves v1 receipts, cumulative spending and the 
   const upgrade=(nonce,legacyThrough,coins='1000000000')=>({payload:{...authorization(nonce,coins).payload,
     type:STARTER_AUTHORIZATION_V2,legacyThrough},signature:'0'.repeat(128)});
   const award=(s,address)=>{
-    const p={...grant(address,s.starterMandate.version),amount:starterGrantAmount(s)};
+    const p={...grant(address,activeStarterMandate(s).version),amount:starterGrantAmount(s)};
     return {...s,...starterGrantEffect(s,p),height:s.height+1};
   };
   const legacy=award(award(open,buyer),other);
   assert.equal(legacyStarterThrough(legacy),14);
-  assert.throws(()=>starterMandateEffect(legacy,upgrade(2,0)),/cutover/);
-  const current={...legacy,...starterMandateEffect(legacy,upgrade(2,14)),height:15};
+  assert.throws(()=>starterMandateEffect(legacy,upgrade(2,14)),/Suspend/);
+  const paused={...legacy,...starterMandateEffect(legacy,suspension(2)),height:15};
+  assert.throws(()=>starterMandateEffect(paused,upgrade(3,0)),/cutover/);
+  const current={...paused,...starterMandateEffect(paused,upgrade(3,14)),height:16};
   assert.equal(starterGrantAmount(current),1_000_000_000_000);
-  assert.equal(current.starterMandate.cap,'1000000000000000000');
+  assert.equal(current.starterMandateV2.cap,'1000000000000000000');
+  assert.deepEqual(current.starterMandate,paused.starterMandate);
+  assert.deepEqual(current.starterClaims,paused.starterClaims);
+  assert.equal(current.starterClaimsV2,undefined);
   assert.equal(remainingStarterClaims(current),MAX_STARTER_WALLETS-2);
   assert.equal(starterClaimAmount(current,buyer),100_000_000_000);
   assert.equal(starterClaimAmount(current,seq),null);
   assert.throws(()=>award(current,buyer),/already received/);
-  assert.throws(()=>starterGrantEffect(current,grant(seq,2)),/Incorrect amount/);
+  assert.throws(()=>starterGrantEffect(current,grant(seq,3)),/Incorrect amount/);
   const next=award(current,seq);
-  assert.equal(next.starterMandate.spent,1_200_000_000_000);
+  assert.equal(next.starterMandateV2.spent,1_200_000_000_000);
+  assert.equal(next.starterMandate.spent,200_000_000_000);
+  assert.deepEqual(next.starterClaimsV2,{[seq]:17});
+  assert.deepEqual(next.starterClaims,paused.starterClaims);
   assert.equal(starterClaimAmount(next,seq),1_000_000_000_000);
-  const stopped={...next,...starterMandateEffect(next,suspension(3)),height:17};
+  const stopped={...next,...starterMandateEffect(next,suspension(4)),height:18};
   assert.equal(remainingStarterClaims(stopped),0);
-  assert.throws(()=>starterMandateEffect(stopped,authorization(4)),/downgrade/);
-  assert.throws(()=>starterMandateEffect(stopped,upgrade(4,next.height)),/cutover/);
-  assert.throws(()=>starterMandateEffect(stopped,upgrade(4,14,'1000')),/lifetime/);
-  assert.throws(()=>starterMandateEffect(stopped,upgrade(4,14,'1000001000')),/lifetime/);
-  const renewed={...stopped,...starterMandateEffect(stopped,upgrade(4,14,'5000')),height:18};
+  assert.throws(()=>starterMandateEffect(stopped,authorization(5)),/downgrade/);
+  assert.throws(()=>starterMandateEffect(stopped,upgrade(5,next.height)),/cutover/);
+  assert.throws(()=>starterMandateEffect(stopped,upgrade(5,14,'1000')),/lifetime/);
+  assert.throws(()=>starterMandateEffect(stopped,upgrade(5,14,'1000001000')),/lifetime/);
+  const renewed={...stopped,...starterMandateEffect(stopped,upgrade(5,14,'5000')),height:19};
   assert.equal(remainingStarterClaims(renewed),3);
   assert.equal(starterClaimAmount(renewed,other),LEGACY_STARTER_GRANT_AMOUNT);
   assert.equal(starterClaimAmount(renewed,seq),STARTER_GRANT_AMOUNT);
   assert.throws(()=>award(renewed,seq),/already received/);
   assert.equal(renewed.supply,open.supply);
   assert.equal(verifyAdvance({state:legacy,epochHashes:[]},{state:renewed,epochHashes:[]}).state,renewed);
-  const tampered={...renewed,starterMandate:{...renewed.starterMandate,authorization:upgrade(4,0,'5000')}};
-  assert.throws(()=>verifyAdvance({state:legacy,epochHashes:[]},{state:tampered,epochHashes:[]}),/cutover/);
+  const tampered={...renewed,starterMandate:legacy.starterMandate};
   assert.throws(()=>verifyAdvance({state:current,epochHashes:[]},{state:tampered,epochHashes:[]}),/cutover/);
+  assert.throws(()=>verifyAdvance({state:renewed,epochHashes:[]},{state:{...renewed,starterClaimsV2:{}},epochHashes:[]}),/history rollback/);
 });

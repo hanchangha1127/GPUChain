@@ -24,7 +24,7 @@ function fixture(t) {
   const signer=generateWallet(),a='a'.repeat(64),b='b'.repeat(64),unknown='c'.repeat(64);
   const state={chainId:reserve.chainId,networkStage:'mainnet',reserveClaim:reserve.claim,
     sequencer:signer.address,height:15,tip:hash('initial state'),balances:{[reserve.address]:amount*4,[a]:0},
-    nonces:{[b]:1},providers:[],starterMandate:{version:1,active:true,cap:2*amount,spent:0,
+    nonces:{[b]:1},providers:[],starterMandateV2:{version:2,active:true,cap:2*amount,spent:0,
       authorization:{payload:{type:'authorize-starter-grants-v2',legacyThrough:0}}},
     saleMandate:{active:true,cap:amount*4,spent:0,authority:'e'.repeat(64)}};
   const store=head=>sql.prepare('INSERT OR REPLACE INTO ledger_head(id,tip,checkpoint) VALUES(1,?,?)')
@@ -36,12 +36,13 @@ function fixture(t) {
     const p=tx.payload,prior=live.head.state;
     assert.equal(p.type,'starter-grant');
     assert.equal(p.amount,amount);
+    assert.equal(p.mandateVersion,prior.starterMandateV2.version);
     assert.equal(p.from,signer.address);
     assert.equal(p.nonce,(prior.nonces[signer.address]??0)+1);
     assert.ok(verify(signer.address,p,tx.signature));
     const next={...prior,tip:hash(tx),height:prior.height+1,nonces:{...prior.nonces,[signer.address]:p.nonce},
-      starterMandate:{...prior.starterMandate,spent:prior.starterMandate.spent+amount},
-      starterClaims:{...prior.starterClaims,[p.to]:prior.height+1},
+      starterMandateV2:{...prior.starterMandateV2,spent:prior.starterMandateV2.spent+amount},
+      starterClaimsV2:{...prior.starterClaimsV2,[p.to]:prior.height+1},
       balances:{...prior.balances,[p.to]:(prior.balances[p.to]??0)+amount,[reserve.address]:prior.balances[reserve.address]-amount}};
     await commitHostedTransaction(db,prior,next,JSON.stringify({state:next}),p.type);
     if (lostReply) throw Error('Worker acknowledgement lost');
@@ -96,8 +97,9 @@ test('concurrent starter claims and a lost response settle once per existing wal
 test('the public site waits for signed upgraded terms and reports legacy awards at their original value',async t=>{
   const f=fixture(t), v1={version:1,active:true,cap:2*amount,spent:legacyAmount,
     authorization:{payload:{type:'authorize-starter-grants'}}};
-  const migrated={...f.state,starterClaims:{[f.a]:13},starterMandate:v1};
-  f.store({state:migrated});
+  const {starterMandateV2,...base}=f.state;
+  const legacyState={...base,starterClaims:{[f.a]:13},starterMandate:v1};
+  f.store({state:legacyState});
   const transitioning=await (await f.get(f.b)).json();
   assert.equal(transitioning.active,false);
   assert.equal(transitioning.coins,null);
@@ -105,7 +107,7 @@ test('the public site waits for signed upgraded terms and reports legacy awards 
   assert.equal((await f.claim(f.b)).status,409);
   assert.equal((await (await f.claim(f.a)).json()).coins,'100');
 
-  f.store({state:{...migrated,starterMandate:{...f.state.starterMandate,spent:legacyAmount,
+  f.store({state:{...legacyState,starterMandateV2:{...starterMandateV2,spent:legacyAmount,
     authorization:{payload:{type:'authorize-starter-grants-v2',legacyThrough:13}}}}});
   const a=await (await f.get(f.a)).json();
   assert.equal(a.coins,'1000');
@@ -113,7 +115,18 @@ test('the public site waits for signed upgraded terms and reports legacy awards 
   assert.equal(a.canClaim,false);
   assert.equal((await (await f.claim(f.a)).json()).coins,'100');
   assert.equal((await (await f.claim(f.b)).json()).coins,'1000');
-  assert.equal((await f.read()).head.state.height,16);
+  const final=(await f.read()).head.state;
+  assert.equal(final.height,16);
+  assert.deepEqual(final.starterMandate,v1);
+  assert.deepEqual(final.starterClaims,legacyState.starterClaims);
+  assert.deepEqual(final.starterClaimsV2,{[f.b]:16});
+
+  f.store({state:{...final,starterMandateV2:{...final.starterMandateV2,active:false}}});
+  const closed=await (await f.get()).json();
+  assert.equal(closed.active,false);
+  assert.equal(closed.reason,'program_inactive');
+  assert.equal((await (await f.claim(f.a)).json()).coins,'100');
+  assert.equal((await (await f.claim(f.b)).json()).coins,'1000');
 });
 
 test('starter grant pauses for hosted checkpoint headroom and cannot use USDT reservations',async t=>{

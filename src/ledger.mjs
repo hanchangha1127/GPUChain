@@ -3,7 +3,7 @@ import { hash, sign, verify } from './crypto.mjs';
 import { decodeAmount, encodeAmount } from './amount.mjs';
 import { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
 import { LEGACY_STARTER_GRANT_AMOUNT, MAX_STARTER_WALLETS, STARTER_AUTHORIZATION_V2, STARTER_GRANT_AMOUNT,
-  legacyStarterThrough, remainingStarterClaims, starterAddressEligible, starterClaimHeight, starterGrantAmount } from './starter-grants.mjs';
+  activeStarterMandate, legacyStarterThrough, remainingStarterClaims, starterAddressEligible, starterClaimHeight, starterGrantAmount } from './starter-grants.mjs';
 export { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
 import { SALE_MERCHANT, SALE_TOKENS, SALE_NANO_PER_MICRO, SALE_TERMS } from './sale-policy.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
@@ -166,30 +166,32 @@ function validateGrantCap(value,spent,unit) {
 // Retain the signed owner permission so a pruned observer can verify its lifetime budget.
 export function starterMandateEffect(state,tx) {
   requireGrantNetwork(state);
-  const p=tx.payload,old=state.starterMandate;
+  const p=tx.payload,old=activeStarterMandate(state);
   requireValue(p.chainId===state.chainId && p.from===DISTRIBUTION_RESERVE.address,
     'Only the distribution reserve may authorize starter grants');
   integer(p.nonce,'starter mandate version',1);
   requireValue(p.nonce>(old?.version ?? 0),'Starter grant mandate version must advance');
   if (p.type==='suspend-starter-grants') {
     requireValue(old?.active,'No active starter grant mandate');
-    return {starterMandate:{...old,active:false,version:p.nonce,suspension:structuredClone(tx)}};
+    const key=state.starterMandateV2 ? 'starterMandateV2' : 'starterMandate';
+    return {[key]:{...old,active:false,version:p.nonce,suspension:structuredClone(tx)}};
   }
   const upgraded=p.type===STARTER_AUTHORIZATION_V2;
   requireValue(upgraded || p.type==='authorize-starter-grants','Invalid starter grant mandate');
   if (upgraded) {
+    requireValue(!state.starterMandate?.active,'Suspend the legacy starter mandate before upgrading');
     requireValue(p.legacyThrough===legacyStarterThrough(state),'Incorrect starter cutover height');
   } else {
-    requireValue(!old || starterGrantAmount(state)===LEGACY_STARTER_GRANT_AMOUNT,'Starter grant downgrade');
+    requireValue(!state.starterMandateV2,'Starter grant downgrade');
   }
   const spent=old?.spent ?? 0;
   validateGrantCap(p.cap,spent,upgraded ? STARTER_GRANT_AMOUNT : LEGACY_STARTER_GRANT_AMOUNT);
-  return {starterMandate:{active:true,cap:p.cap,spent,version:p.nonce,authorization:structuredClone(tx)}};
+  return {[upgraded?'starterMandateV2':'starterMandate']:{active:true,cap:p.cap,spent,version:p.nonce,authorization:structuredClone(tx)}};
 }
 
 export function starterGrantEffect(state,p) {
   requireGrantNetwork(state);
-  const m=state.starterMandate;
+  const m=activeStarterMandate(state);
   requireValue(m?.active===true && p.type==='starter-grant' && p.from===MAINNET.issuer &&
     p.chainId===state.chainId && p.mandateVersion===m.version,'Starter grant authorization missing or changed');
   const unit=starterGrantAmount(state);
@@ -198,20 +200,30 @@ export function starterGrantEffect(state,p) {
   requireValue(starterClaimHeight(state,p.to)===null,'Wallet already received its starter grant');
   requireValue(remainingStarterClaims(state)>0,'Starter grant budget exhausted');
   const spent=decodeAmount(m.spent)+BigInt(unit);
+  const mandateKey=state.starterMandateV2 ? 'starterMandateV2' : 'starterMandate';
+  const claimsKey=state.starterMandateV2 ? 'starterClaimsV2' : 'starterClaims';
   return {
     balances:pay(state,DISTRIBUTION_RESERVE.address,p.to,unit),
-    starterMandate:{...m,spent:encodeAmount(spent)},
-    starterClaims:{...state.starterClaims,[p.to]:integer(state.height+1,'starter grant height',1)}
+    [mandateKey]:{...m,spent:encodeAmount(spent)},
+    [claimsKey]:{...state[claimsKey],[p.to]:integer(state.height+1,'starter grant height',1)}
   };
 }
 
 export function verifyStarterState(state) {
-  if (!Object.hasOwn(state,'starterMandate') && !Object.hasOwn(state,'starterClaims')) return;
+  const legacy=Object.hasOwn(state,'starterMandate') || Object.hasOwn(state,'starterClaims');
+  const modern=Object.hasOwn(state,'starterMandateV2') || Object.hasOwn(state,'starterClaimsV2');
+  if (!legacy && !modern) return;
   requireGrantNetwork(state);
-  const m=state.starterMandate;
+  const heights=new Set();
+  if (legacy) verifyStarterEra(state,false,heights);
+  if (modern) verifyStarterEra(state,true,heights);
+}
+
+function verifyStarterEra(state,upgraded,heights) {
+  const m=upgraded ? state.starterMandateV2 : state.starterMandate;
   fields(m,['version','active','spent','cap','authorization',...(m?.active===false?['suspension']:[])]);
   requireValue(typeof m.active==='boolean','Invalid starter mandate status');
-  const unit=starterGrantAmount(state);
+  const unit=upgraded ? STARTER_GRANT_AMOUNT : LEGACY_STARTER_GRANT_AMOUNT;
   validateGrantCap(m.cap,m.spent,unit);
   function verifyPermission(tx,type,extra) {
     fields(tx,['payload','signature']);
@@ -222,26 +234,29 @@ export function verifyStarterState(state) {
     signature(p.from,p,tx.signature,'starter permission');
     return p;
   }
-  const upgraded=unit===STARTER_GRANT_AMOUNT;
   const authorization=upgraded ? verifyPermission(m.authorization,STARTER_AUTHORIZATION_V2,['cap','legacyThrough'])
     : verifyPermission(m.authorization,'authorize-starter-grants',['cap']);
-  const cutoff=upgraded ? integer(authorization.legacyThrough,'starter cutover',0,state.height-1) : state.height;
+  const cutoff=upgraded ? integer(authorization.legacyThrough,'starter cutover',0,state.height-1) : 0;
+  if (upgraded) {
+    requireValue(!state.starterMandate?.active && authorization.nonce>(state.starterMandate?.version ?? 0) &&
+      cutoff===legacyStarterThrough(state),'Invalid starter cutover or legacy mandate');
+  }
   const latest=m.active?authorization:verifyPermission(m.suspension,'suspend-starter-grants',[]);
   requireValue(m.cap===authorization.cap && m.version===latest.nonce &&
     (m.active || latest.nonce>authorization.nonce),'Starter mandate differs from reserve permission');
-  const claims=Object.hasOwn(state,'starterClaims') ? state.starterClaims : {};
+  const key=upgraded ? 'starterClaimsV2' : 'starterClaims';
+  const claims=Object.hasOwn(state,key) ? state[key] : {};
   requireValue(record(claims),'Invalid starter claim registry');
-  const heights=new Set();
-  let spent=0n;
+  let spent=upgraded ? decodeAmount(state.starterMandate?.spent ?? 0) : 0n;
   for (const [address,height] of Object.entries(claims)) {
     requireValue(starterAddressEligible(state,address) && Number.isSafeInteger(height) &&
-      height>state.mainnetPromotion.payload.anchorHeight && height<=state.height &&
+      height>state.mainnetPromotion.payload.anchorHeight && height>cutoff && height<=state.height &&
+      (!upgraded || !Object.hasOwn(state.starterClaims ?? {},address)) &&
       !heights.has(height),'Invalid starter claim record');
     heights.add(height);
-    spent+=BigInt(height<=cutoff ? LEGACY_STARTER_GRANT_AMOUNT : STARTER_GRANT_AMOUNT);
+    spent+=BigInt(unit);
   }
-  if (upgraded) requireValue((!cutoff || heights.has(cutoff)) && heights.size<=MAX_STARTER_WALLETS,
-    'Invalid starter cutover or wallet count');
+  if (upgraded) requireValue(heights.size<=MAX_STARTER_WALLETS,'Invalid starter wallet count');
   requireValue(spent===decodeAmount(m.spent),'Starter claim count differs from lifetime spend');
 }
 

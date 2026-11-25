@@ -26,7 +26,7 @@ The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-pl
 
 On Windows, an upgraded managed start converts the verified legacy participant key to current-user DPAPI with an owner-only ACL. Preserve the address and validator database. Use the portable encrypted backup for recovery under another Windows profile. The current OS user shares a per-chain, per-wallet spend lock across the GUI, CLI and OpenCode. To reconcile a pending inference without generating another completion, run `node src/cli.mjs recover-settlement --wallet WALLET_FILE`. Report any unconfirmed outcome to the owner before another inference.
 
-Nodes from the 100-coin grant release need the updated ledger verifier to follow the 1,000-coin authorization. On an existing installation, run `git pull --ff-only` in the installed checkout, then `npm stop` and `npm start` after active work finishes. Check `node src/cli.mjs verify` and reuse the same participant data directory.
+The 1,000-coin grant keeps historical 100-coin claims and their signed permissions verifiable. Upgrade prospective voting nodes for the new grant protocol. On an existing installation, run `git pull --ff-only` in the installed checkout, then `npm stop` and `npm start` after active work finishes. Check `node src/cli.mjs verify` and reuse the same participant data directory.
 
 ## Voting on the public network
 

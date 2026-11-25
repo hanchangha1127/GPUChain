@@ -8,6 +8,7 @@ import { ledgerPage, ledgerScript } from './ledger-page.mjs';
 import { salesRoute } from './sales.mjs';
 import { commitHostedTransaction, prepareSalesRetirement, retirementGuard, OUTCOME_ROW_BASE, HOSTED_HEAD_BYTES } from './sale-holds.mjs';
 import { starterRoute } from './starter.mjs';
+import { activeStarterMandate } from '../../src/starter-grants.mjs';
 import { OUTCOME_SLOTS, outcomeRoute, sequencerOutcome } from '../../src/transaction-outcome.mjs';
 import { canValidate, EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
 import { relayRoute, purgeExpiredRelay } from '../../src/relay-service.mjs';
@@ -98,7 +99,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
   catch (err) { throw new HttpError(400,err.message); }
   let ready;
   const production=head.state.networkStage==='mainnet';
-  const starter=Boolean(head.state.starterMandate);
+  const starter=Boolean(activeStarterMandate(head.state));
   try { ready = await checkReadiness(member,fetchReady,Boolean(head.state.reserveClaim),production,starter); }
   catch { throw new HttpError(409,'Cannot verify validator readiness at the signed origin'); }
   let roster;
