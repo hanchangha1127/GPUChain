@@ -8,7 +8,7 @@ For an authorized mainnet release, test the change, push it to GitHub, publish u
 
 ## Start the public verification node by default
 
-The public site offers 100 starter coins once per eligible address already present in the signed mainnet ledger. The reserve owner authorized a lifetime budget of 100,000,000 coins, up to 1,000,000 wallets. A freshly created local wallet may need to wait for its first mainnet record. Check eligibility using `GET /v1/starter/status?address=PUBLIC_ADDRESS`. Claiming credits the displayed address. USDT payments are temporarily disabled on Ethereum and BNB Smart Chain. Direct anyone who already paid to the existing order lookup with their order ID.
+The public site offers 1,000 starter coins once per eligible address already present in the signed mainnet ledger. The reserve owner authorized a lifetime budget of 1,000,000,000 coins, up to 1,000,000 wallets. A freshly created local wallet may need to wait for its first mainnet record. Check eligibility using `GET /v1/starter/status?address=PUBLIC_ADDRESS`. Claiming credits the displayed address. USDT payments are temporarily disabled on Ethereum and BNB Smart Chain. Direct anyone who already paid to the existing order lookup with their order ID.
 
 1. Use an existing GPUChain checkout or clone `https://github.com/hanchangha1127/GPUChain.git` into the user's chosen workspace and enter the repository root.
 2. Check `node --version`. Use Node 24 or later. If needed, install it with the platform's package manager or the [Node.js installer](https://nodejs.org/en/download). On Windows with WinGet, use `winget install --id OpenJS.NodeJS.LTS --exact`, then open a shell that sees the new PATH.
@@ -25,6 +25,8 @@ For an explicitly requested one-time connectivity and provider check, run `npm r
 The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-place promotion keeps the original genesis hash, wallet addresses, balances and transaction nonces. Existing bootstrap and genesis filenames retain `testnet` for compatibility. Check the signed network state with `node src/cli.mjs verify`: the promoted checkpoint has `networkStage` equal to `mainnet`.
 
 On Windows, an upgraded managed start converts the verified legacy participant key to current-user DPAPI with an owner-only ACL. Preserve the address and validator database. Use the portable encrypted backup for recovery under another Windows profile. The current OS user shares a per-chain, per-wallet spend lock across the GUI, CLI and OpenCode. To reconcile a pending inference without generating another completion, run `node src/cli.mjs recover-settlement --wallet WALLET_FILE`. Report any unconfirmed outcome to the owner before another inference.
+
+Nodes from the 100-coin grant release need the updated ledger verifier to follow the 1,000-coin authorization. On an existing installation, run `git pull --ff-only` in the installed checkout, then `npm stop` and `npm start` after active work finishes. Check `node src/cli.mjs verify` and reuse the same participant data directory.
 
 ## Voting on the public network
 

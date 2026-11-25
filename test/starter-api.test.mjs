@@ -6,7 +6,7 @@ import { createStarterRoute } from '../hosting/sites/starter.mjs';
 import { GRANT_HEAD_BYTES, commitHostedTransaction } from '../hosting/sites/sale-holds.mjs';
 import { generateWallet, hash, verify } from '../src/crypto.mjs';
 import { DISTRIBUTION_RESERVE as reserve } from '../src/ledger.mjs';
-import { STARTER_GRANT_AMOUNT as amount } from '../src/starter-grants.mjs';
+import { STARTER_GRANT_AMOUNT as amount, LEGACY_STARTER_GRANT_AMOUNT as legacyAmount } from '../src/starter-grants.mjs';
 import worker from '../hosting/sites/worker.mjs';
 
 function fixture(t) {
@@ -24,7 +24,8 @@ function fixture(t) {
   const signer=generateWallet(),a='a'.repeat(64),b='b'.repeat(64),unknown='c'.repeat(64);
   const state={chainId:reserve.chainId,networkStage:'mainnet',reserveClaim:reserve.claim,
     sequencer:signer.address,height:15,tip:hash('initial state'),balances:{[reserve.address]:amount*4,[a]:0},
-    nonces:{[b]:1},providers:[],starterMandate:{version:1,active:true,cap:2*amount,spent:0},
+    nonces:{[b]:1},providers:[],starterMandate:{version:1,active:true,cap:2*amount,spent:0,
+      authorization:{payload:{type:'authorize-starter-grants-v2',legacyThrough:0}}},
     saleMandate:{active:true,cap:amount*4,spent:0,authority:'e'.repeat(64)}};
   const store=head=>sql.prepare('INSERT OR REPLACE INTO ledger_head(id,tip,checkpoint) VALUES(1,?,?)')
     .run(head.state.tip,JSON.stringify(head));
@@ -59,6 +60,7 @@ test('starter status checks ledger existence including zero balances and histori
   const status=await (await f.get()).json();
   assert.equal(status.remainingClaims,2);
   assert.equal(status.active,true);
+  assert.equal(status.coins,'1000');
   assert.equal((await (await f.get(f.a.toUpperCase())).json()).canClaim,true);
   assert.equal((await (await f.get(f.b)).json()).eligible,true);
   const unknown=await (await f.get(f.unknown)).json();
@@ -75,7 +77,7 @@ test('concurrent starter claims and a lost response settle once per existing wal
   const f=fixture(t);
   const responses=await Promise.all([f.claim(f.a),f.claim(f.a)]);
   assert.deepEqual(responses.map(r=>r.status).sort(),[200,201]);
-  for(const r of responses) assert.equal((await r.json()).height,16);
+  for(const r of responses) { const paid=await r.json();assert.equal(paid.coins,'1000');assert.equal(paid.height,16); }
   f.dropReply();
   const lost=await f.claim(f.b);
   assert.equal(lost.status,200);
@@ -86,8 +88,32 @@ test('concurrent starter claims and a lost response settle once per existing wal
   assert.equal(state.balances[f.b],amount);
   const existing=await (await f.get(f.a)).json();
   assert.equal(existing.claimed,true);
+  assert.equal(existing.claimedCoins,'1000');
   assert.equal(existing.remainingClaims,0);
   assert.equal((await f.claim(f.a)).status,200);
+});
+
+test('the public site waits for signed upgraded terms and reports legacy awards at their original value',async t=>{
+  const f=fixture(t), v1={version:1,active:true,cap:2*amount,spent:legacyAmount,
+    authorization:{payload:{type:'authorize-starter-grants'}}};
+  const migrated={...f.state,starterClaims:{[f.a]:13},starterMandate:v1};
+  f.store({state:migrated});
+  const transitioning=await (await f.get(f.b)).json();
+  assert.equal(transitioning.active,false);
+  assert.equal(transitioning.coins,null);
+  assert.equal(transitioning.reason,'program_updating');
+  assert.equal((await f.claim(f.b)).status,409);
+  assert.equal((await (await f.claim(f.a)).json()).coins,'100');
+
+  f.store({state:{...migrated,starterMandate:{...f.state.starterMandate,spent:legacyAmount,
+    authorization:{payload:{type:'authorize-starter-grants-v2',legacyThrough:13}}}}});
+  const a=await (await f.get(f.a)).json();
+  assert.equal(a.coins,'1000');
+  assert.equal(a.claimedCoins,'100');
+  assert.equal(a.canClaim,false);
+  assert.equal((await (await f.claim(f.a)).json()).coins,'100');
+  assert.equal((await (await f.claim(f.b)).json()).coins,'1000');
+  assert.equal((await f.read()).head.state.height,16);
 });
 
 test('starter grant pauses for hosted checkpoint headroom and cannot use USDT reservations',async t=>{
@@ -96,7 +122,7 @@ test('starter grant pauses for hosted checkpoint headroom and cannot use USDT re
   assert.equal((await f.claim(f.a)).status,507);
   f.store({state:f.state});
   f.sql.prepare(`INSERT INTO sale_orders(id,chain_id,payer,recipient,amount_micro,intent,client_key,created_ms,expires_ms,
-    start_block,cursor_block,scan_after,state) VALUES('held',1,'payer','to',35000000,'{}','k',1,2,'1','1',0,'reserved')`).run();
+    start_block,cursor_block,scan_after,state) VALUES('held',1,'payer','to',350000000,'{}','k',1,2,'1','1',0,'reserved')`).run();
   assert.equal((await (await f.get(f.a)).json()).reason,'reserve_unavailable');
   assert.equal((await f.claim(f.a)).status,409);
   assert.equal((await f.read()).head.state.balances[reserve.address],4*amount);

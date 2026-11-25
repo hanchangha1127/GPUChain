@@ -2,6 +2,7 @@ import { hash, sign } from './crypto.mjs';
 import { applyBlock, createBlock } from './ledger.mjs';
 import { authenticateLegacy, checkpointProof, updatedEpochHashes } from './checkpoint-base.mjs';
 import { verifyConsensusCheckpoint } from './consensus.mjs';
+import { legacyStarterThrough, starterGrantAmount, STARTER_GRANT_AMOUNT } from './starter-grants.mjs';
 
 export function authenticate(checkpoint, chainId) {
   if (Object.hasOwn(checkpoint,'authority') || Object.hasOwn(checkpoint,'consensus')) {
@@ -28,8 +29,16 @@ export function verifyAdvance(prior,next) {
       throw Error('Starter mandate or claim history rollback');
     }
     if (state.starterMandate.version===old.starterMandate.version &&
-      (state.starterMandate.active!==old.starterMandate.active || state.starterMandate.cap!==old.starterMandate.cap)) {
+      (state.starterMandate.active!==old.starterMandate.active || state.starterMandate.cap!==old.starterMandate.cap ||
+        starterGrantAmount(state)!==starterGrantAmount(old))) {
       throw Error('Conflicting starter grant permission');
+    }
+    if (starterGrantAmount(old)===STARTER_GRANT_AMOUNT) {
+      if (starterGrantAmount(state)!==STARTER_GRANT_AMOUNT || legacyStarterThrough(state)!==legacyStarterThrough(old)) {
+        throw Error('Starter grant rate or cutover rollback');
+      }
+    } else if (starterGrantAmount(state)===STARTER_GRANT_AMOUNT && legacyStarterThrough(state)<legacyStarterThrough(old)) {
+      throw Error('Starter grant cutover precedes an existing award');
     }
   }
   if (old.mainnetPromotion) {

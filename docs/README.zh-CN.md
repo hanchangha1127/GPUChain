@@ -2,6 +2,18 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
+## 免费领取 1,000 枚推理代币
+
+GPUChain 主网账本中已有记录的钱包可免费领取 **1,000 枚代币**，用于支付推理请求，每个钱包限领一次。总预算为 10 亿枚代币，最多可供 100 万个钱包领取。
+
+1. 在 GPUChain 仓库中运行 `npm run gui`，或在 Windows 上打开 **GPUChain Wallet.cmd**，复制钱包的 64 位公开地址。
+2. 在官方网站粘贴地址，点击**检查地址**。[https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+3. 如果地址符合条件，点击**领取 1,000 枚代币**。如果刚在本地创建了钱包，请等地址在主网账本中有记录后再试。
+
+新的 USDT 支付已暂停。已付款的用户仍可在同一网站输入原订单号查询订单状态。
+
+## 启动主网节点
+
 GPUChain 公开主网 `gpuchain-mainnet-1` 目前以小规模试点方式运行。由签名交易完成的原链升级保留原创世哈希、钱包地址、余额和交易序号。运行 `node src/cli.mjs verify` 可核对 `networkStage` 是否为 `mainnet`。为兼容现有客户端，创世文件仍使用原文件名 `sites-testnet.json`。
 
 **把这个仓库的 URL 发给代理，就能在后台启动公开主网的验证节点。** 也可以在装有 Node.js 24 或更高版本的机器上克隆仓库，运行 `npm start`。节点创建或复用自己的钱包和数据库，持续验证已签名的检查点，保存最新的已验证状态。关闭终端或结束代理会话后，节点仍然运行。参与验证无需 GPU、模型下载或公网 IP。[代理安装指南](../AGENTS.md) · [公开主网运行说明](../hosting/sites/README.md)
@@ -10,7 +22,7 @@ GPUChain 公开主网 `gpuchain-mainnet-1` 目前以小规模试点方式运行�
 
 **打开钱包界面**：运行 `npm run gui`，或在 Windows 上双击 **GPUChain Wallet.cmd**。程序会启动节点或使用已运行的节点，再打开浏览器。本机界面显示钱包的公开地址和已验证余额、节点的同步和投票状态，以及本机推理服务适配器的状态。界面使用单独的本机回环端口。运行 `node scripts/open-wallet.mjs --print-url` 可查看实际地址。 如需转账，请打开 `GPUChain Unlock.cmd` 或运行 `npm run wallet:unlock` 获取一次性代码，在本机输入并核对收款地址和金额后确认。
 
-界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。主网账本中已有记录的钱包可在公开网站领取一次 100 枚代币。新的 USDT 支付已暂时停用。[领取和旧订单查询](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [备份与恢复](wallet-backup.md)
+界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。[备份与恢复](wallet-backup.md)
 
 Windows 节点在升级后首次启动时，会使用当前用户的 DPAPI 保护现有参与者私钥。在其他电脑上恢复钱包需要密码加密的备份。要单独核对或完成待结算的支付，可运行 `node src/cli.mjs recover-settlement --wallet 钱包文件路径`，无需重新生成回答。
 

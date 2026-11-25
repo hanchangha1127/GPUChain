@@ -4,6 +4,20 @@
 
 GPUChain runs a public mainnet pilot for paid Qwen3.8-Flash-Next inference. A provider runs Strata on its own hardware and earns coins for completed text requests. Wallet holders can transfer coins or spend them on another provider while their own GPU is offline. Sites hosts the initial sequencer. Once three authorized validators are ready, their committee can settle transactions with two votes.
 
+## Claim 1,000 free inference coins
+
+Each eligible GPUChain wallet already recorded on the mainnet can claim **1,000 coins once** to use for inference. The program budget is 1,000,000,000 coins, enough for up to 1,000,000 wallets.
+
+**Official claim site** · [https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+
+1. Open GPUChain Wallet with `npm run gui` or **GPUChain Wallet.cmd** on Windows. Select **Copy address** to copy your 64-character GPUChain public address.
+2. Paste the address on the claim site and select **Check address**.
+3. If the address is eligible, select **Claim 1,000 coins**. The coins go to the address you entered. You can check the balance in your wallet after its next sync.
+
+If your new wallet has no mainnet record yet, try again after its first recorded activity, such as receiving a GPUChain transfer. The free claim requires only the public address. New USDT payments are paused. You can still look up an earlier payment on the site using the original order ID.
+
+## Run a public mainnet node
+
 The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-place promotion keeps the original genesis hash, wallet addresses, balances and transaction nonces. Existing bootstrap and genesis filenames retain `testnet` for compatibility. Check the signed network state with `node src/cli.mjs verify`: the promoted checkpoint has `networkStage` equal to `mainnet`.
 
 **Run a public mainnet node.** Give this repository URL to an agent, or clone it and run `npm start` with Node.js 24 or later. A background process creates or reuses its local identity, fetches signed checkpoints and keeps the latest verified ledger state. It continues after the terminal or agent session closes. A GPU, model download and public IP are unnecessary for this role. [Agent setup guide](AGENTS.md) · [Public mainnet operations](hosting/sites/README.md)
@@ -63,8 +77,6 @@ Every default node verifies checkpoints. To enter the voting committee, it also 
 Sites certifies three ready validators and seals its final checkpoint. Two of those three must retain their voting state and communicate to settle transactions. Other participants continue to verify. [Committee activation and recovery assumptions](hosting/sites/README.md)
 
 ## Metering and epochs
-
-The public site offers 100 starter coins once per previously recorded mainnet wallet, with a program budget of 100,000,000 coins for up to 1,000,000 wallets. Enter the public address, check eligibility and claim the grant. Newly created local addresses need a mainnet record before claiming. USDT payments on Ethereum and BNB Smart Chain are temporarily paused. Previously paid orders can still be checked using the original order ID. [Starter coins and order lookup](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
 
 The original public genesis allocates one coin. A single sequencer-signed `issue-reserve` transaction can add exactly 1,000,000,000,000 coins to the designated distribution wallet. The chain records a permanent issuance marker. After issuance, total supply is 1,000,000,000,001 coins. Wallets and transfers use exact integer nanocoins, including amounts above JavaScript's safe integer range. The reserve is an inventory of inference credits; a proposed or published sale price does not establish a dollar redemption right.
 

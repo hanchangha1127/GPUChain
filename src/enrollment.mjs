@@ -108,7 +108,7 @@ export async function limitedJson(response,byteLimit) {
 export async function checkReadiness(candidate, fetchReady = fetch, exactMoney = false, mainnet = false, starterGrants = false) {
   const challenge = globalThis.crypto.randomUUID().replaceAll('-','');
   const response = await fetchReady(candidate.origin + '/v1/consensus/ready?challenge=' + challenge +
-    (exactMoney?'&money=exact':'') + (mainnet?'&stage=mainnet':'') + (starterGrants?'&starter=1':''),
+    (exactMoney?'&money=exact':'') + (mainnet?'&stage=mainnet':'') + (starterGrants?'&starter=2':''),
     {redirect:'manual',signal:AbortSignal.timeout(3000)});
   const {payload,signature} = await limitedJson(response,4096);
   const expected = {domain:'gpuchain/validator-ready/v1',chainId:candidate.chainId,

@@ -8,6 +8,7 @@ import { parseWalletDocument } from './private-file.mjs';
 import { CONTEXT, createGenesis, DISTRIBUTION_RESERVE, EPOCH_TOKENS, MAINNET, mainnetPromotionPayload, replay } from './ledger.mjs';
 import { formatCoins, parseCoins } from './amount.mjs';
 import { SALE_TERMS } from './sale-policy.mjs';
+import { legacyStarterThrough, STARTER_AUTHORIZATION_V2 } from './starter-grants.mjs';
 import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
 import { inferenceRoutes } from './inference-routes.mjs';
@@ -314,7 +315,12 @@ async function writeCommand(command,v,wallet,ledger,resolveLedger,directory,gene
     if (state.chainId!==MAINNET.chainId || state.networkStage!=='mainnet' || wallet.address!==DISTRIBUTION_RESERVE.address) {
       throw Error('The public mainnet reserve wallet is required to change the starter grant budget');
     }
-    details=command==='authorize-starter-grants' ? {cap:parseCoins(required(v,'coins'))} : {};
+    if (command==='authorize-starter-grants') {
+      const payload={type:STARTER_AUTHORIZATION_V2,...common,cap:parseCoins(required(v,'coins')),
+        legacyThrough:legacyStarterThrough(state)};
+      return print(await submit(ledger,payload,wallet));
+    }
+    details={};
   } else if (command === 'issue-reserve') {
     if (wallet.address !== genesis.payload.sequencer) throw Error('The genesis sequencer wallet must authorize reserve issuance');
     if (state.reserveClaim) throw Error('Public testnet reserve already issued');

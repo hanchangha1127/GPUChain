@@ -1,9 +1,10 @@
-import { decodeAmount } from '../../src/amount.mjs';
+import { formatCoins } from '../../src/amount.mjs';
 import { nextCheckpoint } from '../../src/checkpoint.mjs';
 import { addressFromPrivateKey, sign } from '../../src/crypto.mjs';
 import { DISTRIBUTION_RESERVE, spendableBalance } from '../../src/ledger.mjs';
 import { SALE_NANO_PER_MICRO } from '../../src/sale-policy.mjs';
-import { STARTER_GRANT_AMOUNT, knownStarterWallet, starterAddressEligible, starterClaimHeight } from '../../src/starter-grants.mjs';
+import { STARTER_GRANT_AMOUNT, knownStarterWallet, remainingStarterClaims, starterAddressEligible,
+  starterClaimAmount, starterClaimHeight, starterGrantAmount } from '../../src/starter-grants.mjs';
 import { GRANT_HEAD_BYTES, commitHostedTransaction, heldMicroSql, holdArgs } from './sale-holds.mjs';
 import { readHostedLedger, quorumCommit } from './sale-settlement.mjs';
 
@@ -12,18 +13,18 @@ const response=(data,status=200)=>Response.json(data,{status,headers:{
 }});
 const failure=(code,status)=>response({error:code,code},status);
 const normalize=value=>typeof value==='string' && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null;
-const unit=BigInt(STARTER_GRANT_AMOUNT);
 
 async function statusFor(live,db,address) {
   const {head}=live, state=head.state, mandate=state.starterMandate;
-  const active=state.chainId===DISTRIBUTION_RESERVE.chainId && state.networkStage==='mainnet' && mandate?.active===true;
+  const authorized=state.chainId===DISTRIBUTION_RESERVE.chainId && state.networkStage==='mainnet' && mandate?.active===true;
+  const active=authorized && starterGrantAmount(state)===STARTER_GRANT_AMOUNT;
   const height=address ? starterClaimHeight(state,address) : null;
   const claimed=height!==null;
   const known=Boolean(address && knownStarterWallet(state,address));
   const eligible=known && starterAddressEligible(state,address);
-  let remaining=0n, reason;
+  let remaining=0, reason;
   if (active) {
-    remaining=(decodeAmount(mandate.cap)-decodeAmount(mandate.spent))/unit;
+    remaining=remainingStarterClaims(state);
     let available=spendableBalance(state,DISTRIBUTION_RESERVE.address);
     if (!head.authority) {
       const row=await db.prepare('SELECT CAST('+heldMicroSql+' AS TEXT) AS held')
@@ -33,14 +34,14 @@ async function statusFor(live,db,address) {
       // final atomic write also checks the actual encoded next checkpoint.
       if (new TextEncoder().encode(JSON.stringify(head)).length+512>GRANT_HEAD_BYTES) reason='hosted_capacity';
     } else if (!live.quorumEscrowSupported) reason='unavailable';
-    if (available<unit) reason??='reserve_unavailable';
-    if (remaining<=0n) reason='budget_exhausted';
-  } else reason='program_inactive';
+    if (available<BigInt(STARTER_GRANT_AMOUNT)) reason??='reserve_unavailable';
+    if (remaining===0) reason='budget_exhausted';
+  } else reason=authorized?'program_updating':'program_inactive';
   if (address && !known) reason='wallet_not_recorded';
   else if (address && !eligible) reason='ineligible_wallet';
-  return {coins:'100',address,eligible,claimed,active,requiresProof:false,remainingClaims:Number(remaining),
+  return {coins:active?formatCoins(STARTER_GRANT_AMOUNT):null,address,eligible,claimed,active,requiresProof:false,remainingClaims:remaining,
     canClaim:Boolean(eligible && !claimed && !reason),reason:claimed?'already_claimed':reason??null,
-    ledgerHeight:state.height,...(claimed?{height}:{})};
+    ledgerHeight:state.height,...(claimed?{height,claimedCoins:formatCoins(starterClaimAmount(state,address))}:{})};
 }
 
 async function commitGrant(live,db,tx,signer) {
@@ -84,10 +85,11 @@ export function createStarterRoute({read=readHostedLedger,commit=commitGrant}={}
       const latest=()=>read(db,{starterGrants:true});
       let live=await latest();
       if (checking) return response(await statusFor(live,db,address??null));
-      const paid=(height,alreadyClaimed)=>response({address,coins:'100',claimed:true,alreadyClaimed,height},alreadyClaimed?200:201);
+      const paid=(state,alreadyClaimed)=>response({address,coins:formatCoins(starterClaimAmount(state,address)),
+        claimed:true,alreadyClaimed,height:starterClaimHeight(state,address)},alreadyClaimed?200:201);
       for (let attempt=0;attempt<2;attempt++) {
         const status=await statusFor(live,db,address);
-        if (status.claimed) return paid(status.height,true);
+        if (status.claimed) return paid(live.head.state,true);
         if (!status.canClaim) return failure(status.reason,{
           wallet_not_recorded:404,ineligible_wallet:422,hosted_capacity:507,unavailable:503
         }[status.reason]??409);
@@ -102,12 +104,12 @@ export function createStarterRoute({read=readHostedLedger,commit=commitGrant}={}
           const confirmed=await commit(live,db,{payload,signature:sign(key,payload)},signer);
           const height=starterClaimHeight(confirmed.head.state,address);
           if (height===null || height!==confirmed.head.state.height) return failure('unavailable',503);
-          return paid(height,false);
+          return paid(confirmed.head.state,false);
         } catch (err) {
           if (err.status===507) return failure('hosted_capacity',507);
           live=await latest();
           const height=starterClaimHeight(live.head.state,address);
-          if (height!==null) return paid(height,true);
+          if (height!==null) return paid(live.head.state,true);
           // Only a compare-and-swap rejection is known to be uncommitted.
           if (err.status!==409) return failure('unavailable',503);
         }

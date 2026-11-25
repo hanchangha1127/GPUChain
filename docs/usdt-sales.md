@@ -1,6 +1,6 @@
 # USDT payments are temporarily paused
 
-New GPUChain USDT purchases on Ethereum and BNB Smart Chain are paused. Please do not send USDT. The site offers 100 starter coins once per eligible mainnet address. [Starter coins and order lookup](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+New GPUChain USDT purchases on Ethereum and BNB Smart Chain are paused. Please do not send USDT. The site offers 1,000 starter coins once per eligible mainnet address. [Starter coins and order lookup](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
 
 ## Recover an existing order
 

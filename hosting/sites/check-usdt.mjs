@@ -133,7 +133,8 @@ test('scan disagreements do not clear the inventory reservation or advance its c
 test('public checkout uses a same-origin script and explicit user wallet actions',async()=>{
   const page=await asset('/'),html=await page.text(),script=await (await asset('/buy.js')).text();
   assert.match(page.headers.get('content-security-policy'),/script-src 'self'/);
-  assert.match(html,/<html lang="en">/);assert.match(html,/Claim 100 starter coins/);
+  assert.match(html,/<html lang="en">/);assert.match(html,/Claim free inference coins/);
+  assert.doesNotMatch(html,/1,000 free inference coins|Claim 100 starter coins/);
   assert.match(html,/USDT payments temporarily paused/);
   for(const lang of storeLocales)assert.ok(html.includes('value="'+lang+'"'));
   for(const key of Object.keys(storeMessages)){
@@ -181,7 +182,7 @@ async function openCreditPage(fetcher,{saved=new Map(),search=''}={}) {
 test('starter form verifies existing addresses, excludes stale lookups and submits only one explicit claim',async()=>{
   const old='1'.repeat(64), address='a'.repeat(64), unknown='b'.repeat(64);
   const prior=Promise.withResolvers(), pending=Promise.withResolvers(), claims=[];
-  const eligible={active:true,eligible:true,canClaim:true,claimed:false,remainingClaims:1_000_000};
+  const eligible={coins:'1000',active:true,eligible:true,canClaim:true,claimed:false,remainingClaims:1_000_000};
   const {get,root,nodes}=await openCreditPage(async(path,{method,body})=>{
     if(method==='GET') {
       const a=new URL(path,'https://local.invalid').searchParams.get('address');
@@ -191,7 +192,7 @@ test('starter form verifies existing addresses, excludes stale lookups and submi
     }
     assert.equal(path,'/v1/starter/claim');
     claims.push(JSON.parse(body));await pending.promise;
-    return Response.json({address,coins:'100',claimed:true,alreadyClaimed:false});
+    return Response.json({address,coins:'1000',claimed:true,alreadyClaimed:false});
   });
   const input=get('starterAddress'), claim=get('starterClaim'), status=get('starterStatus');
   assert.equal(claim.disabled,true);
@@ -203,12 +204,14 @@ test('starter form verifies existing addresses, excludes stale lookups and submi
   for(const [index,lang] of storeLocales.entries()) {
     get('language').events.change({target:{value:lang}});
     assert.equal(root.lang,lang);assert.equal(nodes[1].textContent,storeMessages.salesPaused[index]);
-    assert.equal(status.textContent,storeMessages.starterEligible[index]);
+    const formatted=(1000).toLocaleString(lang);
+    assert.equal(status.textContent,storeMessages.starterEligible[index].replace('{coins}',formatted));
+    assert.equal(claim.textContent,storeMessages.starterClaimAmount[index].replace('{coins}',formatted));
   }
   const first=claim.onclick();await claim.onclick();
   assert.equal(claim.disabled,true);assert.deepEqual(claims,[{address}]);
   pending.resolve();await first;
-  assert.equal(claim.disabled,true);assert.equal(status.textContent,storeMessages.starterDone[4]);
+  assert.equal(claim.disabled,true);assert.equal(status.textContent,storeMessages.starterDone[4].replace('{coins}',(1000).toLocaleString('fr')));
   input.value=unknown;await input.events.input();await claim.onclick();
   assert.equal(status.textContent,storeMessages.starterUnknown[4]);assert.deepEqual(claims,[{address}]);
 });
@@ -220,7 +223,8 @@ test('starter form reports failures and rechecks the ledger after an uncertain c
     if(method==='GET'){
       if(mode==='offline') return Response.json({error:'unavailable'},{status:503});
       return Response.json({address,active:mode!=='closed',eligible:true,canClaim:mode==='ready',
-        claimed:mode==='done',remainingClaims:mode==='closed'?0:5});
+        coins:mode==='closed'?null:'1000',claimed:mode==='done',claimedCoins:mode==='done'?'1000':null,
+        remainingClaims:mode==='closed'?0:5});
     }
     posts++;mode='done';throw Error('Delivery reply lost');
   },{search:'?gpuAddress='+address});
@@ -230,13 +234,36 @@ test('starter form reports failures and rechecks the ledger after an uncertain c
   mode='ready';await get('starterCheck').onclick();await get('starterClaim').onclick();
   assert.equal(get('starterStatus').textContent,storeMessages.starterUnconfirmed[0]);
   assert.equal(get('starterClaim').disabled,true);await get('starterCheck').onclick();
-  assert.equal(get('starterStatus').textContent,storeMessages.starterAlready[0]);assert.equal(posts,1);
+  assert.equal(get('starterStatus').textContent,storeMessages.starterAlready[0].replace('{coins}','1,000'));assert.equal(posts,1);
+});
+
+test('the page displays the authorized amount only after activation and retains each historical payout',async()=>{
+  const address='d'.repeat(64);
+  let upgraded=false, historical=false;
+  const {get}=await openCreditPage(async(path,{method})=>{
+    assert.equal(method,'GET');
+    return Response.json({address:path.includes('?')?address:null,
+      active:upgraded,coins:upgraded?'1000':null,eligible:true,
+      claimed:historical,claimedCoins:historical?'100':null,
+      canClaim:upgraded && !historical,remainingClaims:upgraded?10:0,reason:upgraded?null:'program_updating'});
+  });
+  const heading=get('starterHeading'),claim=get('starterClaim'),status=get('starterStatus');
+  assert.equal(heading.textContent,storeMessages.starterTitle[0]);
+  assert.equal(claim.disabled,true);assert.equal(status.textContent,storeMessages.starterUpdating[0]);
+  get('starterAddress').value=address;await get('starterCheck').onclick();
+  assert.equal(claim.disabled,true);
+  upgraded=true;await get('starterCheck').onclick();
+  assert.equal(heading.textContent,'Claim 1,000 free inference coins');
+  assert.equal(claim.disabled,false);
+  historical=true;await get('starterCheck').onclick();
+  assert.equal(claim.disabled,true);assert.equal(status.textContent,storeMessages.starterAlready[0].replace('{coins}','100'));
 });
 
 test('suspended checkout can recover existing orders and verify an already sent transfer without requesting a payment',async()=>{
   const id='e'.repeat(64),txHash='0x'+'d'.repeat(64),gpuAddress='a'.repeat(64),requests=[];
   let status='reserved';
   const {get}=await openCreditPage(async(path,{method,body})=>{
+    if(path==='/v1/starter/status') return Response.json({active:false,coins:null,reason:'program_inactive'});
     requests.push([method,path]);
     if(method==='POST') {
       assert.equal(path,'/v1/sales/claim');assert.deepEqual(JSON.parse(body),{orderId:id,txHash});

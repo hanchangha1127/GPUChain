@@ -2,6 +2,18 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
+## Recevoir 1 000 coins gratuits pour l’inférence
+
+Chaque portefeuille GPUChain déjà inscrit au registre du réseau principal peut recevoir **1 000 coins une seule fois** pour payer des requêtes d’inférence. Le budget total est de 1 milliard de coins, soit jusqu’à 1 million de portefeuilles.
+
+1. Dans le dépôt GPUChain, lancez `npm run gui` ou ouvrez **GPUChain Wallet.cmd** sous Windows. Copiez l’adresse publique de votre portefeuille (64 caractères).
+2. Collez l’adresse sur le site officiel et cliquez sur **Vérifier l’adresse**. [https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+3. Si le portefeuille est éligible, cliquez sur **Recevoir 1 000 coins**. Pour un portefeuille créé localement, réessayez après sa première inscription au registre du réseau principal.
+
+Les nouveaux paiements en USDT sont temporairement suspendus. Si vous avez déjà payé, vous pouvez consulter votre commande sur le même site avec son identifiant d’origine.
+
+## Démarrer un nœud sur le réseau principal
+
 Le réseau principal public `gpuchain-mainnet-1` est exploité à l’échelle d’un projet pilote. Sa promotion signée conserve le hachage de genèse, les portefeuilles, les soldes et les numéros de séquence initiaux. Exécutez `node src/cli.mjs verify` pour vérifier que `networkStage` vaut `mainnet`. Le fichier de genèse conserve son nom historique `sites-testnet.json` pour les clients existants.
 
 **Transmettez l’URL de ce dépôt à un agent pour lancer un nœud de vérification du réseau principal public en arrière-plan.** Vous pouvez aussi cloner le dépôt et exécuter `npm start` avec Node.js 24 ou une version ultérieure. Le nœud crée ou réutilise son portefeuille et sa base de données, vérifie régulièrement les points de contrôle signés et conserve le dernier état vérifié. Il continue de fonctionner après la fermeture du terminal ou de la session de l’agent. Cette participation fonctionne sans GPU, sans téléchargement de modèle et sans adresse IP publique. [Guide pour les agents](../AGENTS.md) · [Exploitation du réseau principal](../hosting/sites/README.md)
@@ -10,7 +22,7 @@ Utilisez `npm run status` pour consulter la hauteur vérifiée et le statut de v
 
 **Ouvrir le portefeuille.** Exécutez `npm run gui`, ou double-cliquez sur **GPUChain Wallet.cmd** sous Windows. Le lanceur démarre le nœud ou réutilise l’instance existante, puis ouvre le navigateur. Le tableau de bord local affiche l’adresse publique, le solde du dernier point de contrôle vérifié, la synchronisation et le statut de vote du nœud, ainsi que l’état de l’adaptateur d’inférence local. L’interface écoute sur un port de bouclage distinct. La commande `node scripts/open-wallet.mjs --print-url` affiche son URL. Pour envoyer des coins, ouvrez `GPUChain Unlock.cmd` ou lancez `npm run wallet:unlock`, saisissez le code à usage unique sur ce PC, puis vérifiez le destinataire et le montant avant de confirmer.
 
-Le portefeuille s’ouvre en anglais et propose cinq langues, dont le français. Utilisez `GPUChain Backup.cmd` pour créer une sauvegarde chiffrée et conservez le mot de passe de restauration séparément. Le site offre 100 coins une seule fois à chaque adresse déjà inscrite au registre principal. Les nouveaux paiements en USDT sont temporairement suspendus. [Demande et suivi des anciennes commandes](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [Sauvegarde et restauration](wallet-backup.md)
+Le portefeuille s’ouvre en anglais et propose cinq langues, dont le français. Utilisez `GPUChain Backup.cmd` pour créer une sauvegarde chiffrée et conservez le mot de passe de restauration séparément. [Sauvegarde et restauration](wallet-backup.md)
 
 Le premier démarrage après la mise à jour protège la clé existante du participant Windows avec DPAPI pour le compte courant. Gardez une sauvegarde chiffrée par mot de passe pour la restauration sur un autre ordinateur. Utilisez `node src/cli.mjs recover-settlement --wallet FICHIER` pour vérifier ou terminer un paiement en attente sans relancer l’inférence.
 

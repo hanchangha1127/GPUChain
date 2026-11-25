@@ -2,7 +2,19 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
-공개 사이트에 메인넷 원장에 이미 기록된 GPUChain 주소를 입력하면 지갑당 한 번 100코인을 신청할 수 있습니다. 총 지급 예산은 1억 코인으로 최대 100만 지갑분입니다. 기록이 없는 주소는 메인넷에 기록된 뒤 다시 시도하세요. Ethereum·BNB Smart Chain의 USDT 신규 결제는 일시 중지됐습니다. 이전에 입금한 주문은 기존 주문 ID로 조회할 수 있습니다. [기본 지급 및 기존 주문 조회](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+## 무료 추론 코인 1,000개 받기
+
+GPUChain 메인넷 원장에 기록된 지급 대상 지갑은 **지갑당 한 번, 1,000코인**을 무료로 받아 추론에 사용할 수 있습니다. 총 지급 예산은 10억 코인으로, 최대 100만 지갑분입니다.
+
+**공식 신청 사이트** · [https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+
+1. `npm run gui`를 실행하거나 Windows에서 **GPUChain Wallet.cmd**를 열고, **주소 복사**를 눌러 64자리 GPUChain 공개 지갑 주소를 복사하세요.
+2. 신청 사이트에 주소를 붙여넣고 **주소 확인**을 누르세요.
+3. 지급 대상으로 확인되면 **1,000코인 받기**를 누르세요. 입력한 주소로 지급되며, 지갑이 다음번에 원장과 동기화되면 잔액에서 확인할 수 있습니다.
+
+새 지갑에 메인넷 기록이 없다고 나오면, GPUChain 송금을 처음 받는 등 해당 주소의 활동이 원장에 기록된 뒤 다시 확인하세요. 무료 신청에는 공개 주소만 필요합니다. USDT 신규 결제는 일시 중지 중이며, 이전에 입금한 주문은 같은 사이트에서 기존 주문 ID로 조회할 수 있습니다.
+
+## 공개 메인넷 노드 실행
 
 GPUChain 공개 메인넷 `gpuchain-mainnet-1`은 소규모로 운영하는 추론 네트워크입니다. 기존 체인에서 서명된 승격 거래로 전환하므로 제네시스 해시, 지갑 주소, 잔액, 거래 순번을 계승합니다. `node src/cli.mjs verify`로 검증된 상태의 `networkStage`가 `mainnet`인지 확인하세요. 기존 설치본과의 호환을 위해 제네시스 파일명 `sites-testnet.json`은 유지합니다.
 

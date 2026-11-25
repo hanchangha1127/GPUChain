@@ -25,7 +25,7 @@ details{margin-top:1rem}summary{cursor:pointer}small{color:#a9c3bb}.pending{marg
 header{gap:1rem;flex-wrap:wrap}header nav{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}header nav label{font-size:.875rem;margin:0}header nav select{width:auto}
 </style>
 <header><b>GPUChain</b><nav><a href="/ledger">${label('ledger')}</a><label for="language">${label('language')}</label><select id="language"><option value="en">English</option><option value="ko">한국어</option><option value="ja">日本語</option><option value="zh-CN">简体中文</option><option value="fr">Français</option></select></nav></header><main>
-<h1>${label('starterTitle')}</h1><p class="intro">${label('starterIntro')}</p>
+<h1 id="starterHeading">${label('starterTitle')}</h1><p class="intro">${label('starterIntro')}</p>
 <section class="pending" aria-labelledby="starterAddressLabel">
 <label id="starterAddressLabel" for="starterAddress">${label('gpu')}</label>
 <input id="starterAddress" class="mono" autocomplete="off" spellcheck="false" placeholder="${en('gpuHint')}" maxlength="64">
@@ -66,17 +66,26 @@ function checkout(genesis,locales,strings) {
   const networkName=id=>t(id===1?'eth':'bsc');
   const grantAddress=()=>el('starterAddress').value.trim().toLowerCase();
   const validGrantAddress=s=>/^[a-f0-9]{64}$/.test(s);
-  let lookupId=0, grant=null, grantMessage='', grantSubmitting=false;
+  let lookupId=0, programCoins=null, grant=null, grantMessage='', grantSubmitting=false;
   const grantReasons={wallet_not_recorded:'starterUnknown',ineligible_wallet:'starterIneligible',
-    invalid_address:'gpuInvalid',program_inactive:'starterClosed',budget_exhausted:'starterExhausted',
+    invalid_address:'gpuInvalid',program_inactive:'starterClosed',program_updating:'starterUpdating',budget_exhausted:'starterExhausted',
     reserve_unavailable:'starterUnavailable',hosted_capacity:'starterUnavailable'};
+  const validAward=value=>value==='1000'||value==='100';
+  const displayCoins=value=>value?Number(value).toLocaleString(lang):'';
+  function updateProgram(status) {
+    if(typeof status?.active!=='boolean' || (status.active && status.coins!=='1000')) throw Error();
+    programCoins=status.active?status.coins:null;
+  }
   function renderGrant() {
     const address=grantAddress(), same=grant?.address===address;
+    const vars={coins:displayCoins(programCoins)};
+    txt('starterHeading',t(programCoins?'starterTitleAmount':'starterTitle',vars));
+    txt('starterClaim',t(programCoins?'starterClaimAmount':'starterClaim',vars));
     el('starterAddress').disabled=grantSubmitting;
     el('starterCheck').disabled=grantSubmitting || !validGrantAddress(address) || grantMessage==='starterChecking';
-    const eligible=same && grant.active && grant.eligible && !grant.claimed && grant.remainingClaims>0 && grant.canClaim;
+    const eligible=same && programCoins && grant.active && grant.eligible && !grant.claimed && grant.remainingClaims>0 && grant.canClaim;
     el('starterClaim').disabled=grantSubmitting || !eligible;
-    txt('starterStatus',grantMessage?t(grantMessage):'');
+    txt('starterStatus',grantMessage?t(grantMessage,{coins:displayCoins(grant?.claimedCoins??programCoins)}):'');
   }
   async function checkGrant() {
     if(grantSubmitting) return;
@@ -90,7 +99,8 @@ function checkout(genesis,locales,strings) {
       if(id!==lookupId || grantAddress()!==address) return;
       if(!status || ['eligible','claimed','active','canClaim'].some(k=>typeof status[k]!=='boolean') ||
         !Number.isSafeInteger(status.remainingClaims) || status.remainingClaims<0 ||
-        (status.address!==undefined && status.address!==address)) throw Error();
+        (status.address!==undefined && status.address!==address) || (status.claimed && !validAward(status.claimedCoins))) throw Error();
+      updateProgram(status);
       grant={...status,address};
       grantMessage=status.claimed?'starterAlready':grantReasons[status.reason] ??
         (!status.active || !status.remainingClaims?'starterClosed':!status.eligible?'starterUnknown':
@@ -107,8 +117,9 @@ function checkout(genesis,locales,strings) {
     grantSubmitting=true;grantMessage='starterSending';renderGrant();
     try {
       const result=await api('/v1/starter/claim',{address});
-      if(result?.address!==address || result.claimed!==true || result.coins!=='100' || typeof result.alreadyClaimed!=='boolean') throw Error();
-      grant={...grant,claimed:true,canClaim:false};
+      if(result?.address!==address || result.claimed!==true || !validAward(result.coins) ||
+        typeof result.alreadyClaimed!=='boolean' || (!result.alreadyClaimed && result.coins!==grant.coins)) throw Error();
+      grant={...grant,claimed:true,canClaim:false,claimedCoins:result.coins};
       grantMessage=result.alreadyClaimed?'starterAlready':'starterDone';
     } catch (error) {
       grant=null;
@@ -224,6 +235,15 @@ function checkout(genesis,locales,strings) {
     });
     const prefill=new URLSearchParams(location.search).get('gpuAddress');
     if(validGrantAddress(prefill||'')) {el('starterAddress').value=prefill;checkGrant();}
+    else {
+      // The initial page has no amount until the API reads the signed program.
+      api('/v1/starter/status').then(status=>{
+        if(lookupId) return;
+        updateProgram(status);
+        grantMessage=grantReasons[status.reason]??'';
+        renderGrant();
+      }).catch(()=>{if(!lookupId){grantMessage='starterUnavailable';renderGrant();}});
+    }
     let stored;
     try {stored=JSON.parse(localStorage.getItem(storageKey));}catch {}
     if(stored?.id && idValid(stored.id)) {

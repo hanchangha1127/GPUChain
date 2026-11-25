@@ -2,6 +2,18 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
+## 推論に使える1,000コインを無料で受け取る
+
+GPUChain のメインネット台帳に記録済みのウォレットは、推論の支払いに使える **1,000コインを1回** 受け取れます。配布予算の総額は10億コインで、最大100万ウォレット分です。
+
+1. GPUChain のリポジトリで `npm run gui` を実行するか、Windows で **GPUChain Wallet.cmd** を開き、ウォレットの公開アドレス（64文字）をコピーします。
+2. 公式サイトにアドレスを貼り付け、**アドレスを確認** を押します。[https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
+3. 受け取り可能と表示されたら、**1,000コインを受け取る** を押します。作成したばかりのウォレットは、アドレスがメインネット台帳に記録された後にもう一度お試しください。
+
+USDT の新規決済は一時停止中です。すでに支払い済みの注文は、同じサイトで元の注文 ID を入力して確認できます。
+
+## メインネットのノードを起動する
+
 GPUChain の公開メインネット `gpuchain-mainnet-1` は、小規模な実運用パイロットです。署名済みの昇格トランザクションにより、元のジェネシスハッシュ、ウォレット、残高、ノンスを引き継ぎます。`node src/cli.mjs verify` で `networkStage` が `mainnet` であることを確認できます。既存クライアントとの互換性のためジェネシスファイルの名前は `sites-testnet.json` のままです。
 
 **このリポジトリの URL をエージェントに渡すと、公開メインネットの検証ノードをバックグラウンドで起動します。** 手動で実行する場合は Node.js 24 以降の環境でリポジトリをクローンし、`npm start` を実行します。ノードは自身のウォレットとデータベースを作成または再利用し、署名付きチェックポイントを継続して検証・保存します。ターミナルやエージェントのセッションを閉じても動作します。GPU、モデルのダウンロード、公開 IP アドレスは不要です。[エージェント向け手順](../AGENTS.md) · [公開メインネットの運用](../hosting/sites/README.md)
@@ -10,7 +22,7 @@ GPUChain の公開メインネット `gpuchain-mainnet-1` は、小規模な実�
 
 **ウォレットを開く** — `npm run gui` を実行するか、Windows では **GPUChain Wallet.cmd** をダブルクリックしてください。ノードを起動するか、起動中のノードを再利用してブラウザーを開きます。ローカルの画面で、ウォレットの公開アドレスと検証済み残高、ノードの同期・投票状態、ローカル推論アダプターの状態を確認できます。画面は専用のループバックポートで提供されます。実際の URL は `node scripts/open-wallet.mjs --print-url` で表示できます。 送金する場合は `GPUChain Unlock.cmd` または `npm run wallet:unlock` でワンタイムコードを取得してこのPCで入力し、受取先と金額を確認して確定してください。
 
-画面の初期言語は英語で、日本語を含む 5 言語を選択できます。`GPUChain Backup.cmd` で暗号化バックアップを作成し、復元用のパスワードを別に保管してください。メインネット台帳に記録済みのウォレットは、公開サイトで一度だけ100コインを受け取れます。USDT の新規決済は一時停止中です。[申請と既存注文の確認](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [バックアップ](wallet-backup.md)
+画面の初期言語は英語で、日本語を含む 5 言語を選択できます。`GPUChain Backup.cmd` で暗号化バックアップを作成し、復元用のパスワードを別に保管してください。[バックアップ](wallet-backup.md)
 
 Windows では、更新後の初回起動時に参加者の既存の秘密鍵を現在のユーザーの DPAPI で保護します。別の PC への復元にはパスワードで暗号化したバックアップを使います。推論を再実行せずに保留中の支払いを確認・精算するには `node src/cli.mjs recover-settlement --wallet ウォレットファイル` を実行してください。
 
