@@ -24,6 +24,10 @@ test('RTT probes rank ready 256K providers and check capacity without running in
   const modelId = 'qwen3.8-flash-next-q2_0';
   const backend = await listen(t, http.createServer((req, res) => {
     calls.push(req.url);
+    if (req.url === '/api-monitor') {
+      res.writeHead(404);
+      return res.end();
+    }
     if (req.url === '/metrics') return res.end(JSON.stringify({engine:{model:modelId,max_context:CONTEXT,kv:'int8',gen:1},live:{}}));
     res.end(JSON.stringify({data:[{id:modelId, context_length:CONTEXT, status:{value:'loaded'},
       limit:{output:8192}}]}));
@@ -54,7 +58,8 @@ test('RTT probes rank ready 256K providers and check capacity without running in
   assert.ok(ranked[1].latencyMs >= 60);
   assert.equal(probes, 3);
   assert.deepEqual(await rankProviders(state, {ledgerUrl, maxOutputTokens:8193}), []);
-  assert.ok(calls.includes('/metrics') && calls.every(path => ['/metrics','/v1/models'].includes(path)));
+  assert.ok(calls.includes('/metrics') && calls.includes('/api-monitor') &&
+    calls.every(path => ['/metrics','/v1/models','/api-monitor'].includes(path)));
 });
 
 test('probes reject stale challenges, wrong keys and chains, busy or incompatible responses', async t => {

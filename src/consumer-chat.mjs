@@ -1,4 +1,5 @@
 import { hash, sign, verify } from './crypto.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { charge, CONTEXT, MODEL, spendableBalance } from './ledger.mjs';
 import { formatCoins } from './amount.mjs';
 import { chatResponseHash, normalizeChatMessages, normalizeChatOptions, validateChatReply } from './chat-protocol.mjs';
@@ -21,7 +22,24 @@ function bounded(value,label,min,max) {
   return value;
 }
 
-async function selectTarget(ledger, {wallet, transport='auto', providerAddress, providerUrl, preferredProvider}, limits) {
+const warmRelayGraceMs=1500;
+
+async function waitForWarmRelay(ledger,discovery,provider) {
+  const deadline=AbortSignal.timeout(warmRelayGraceMs);
+  const signal=discovery.signal ? AbortSignal.any([deadline,discovery.signal]) : deadline;
+  try {
+    do {
+      await delay(250,undefined,{signal});
+      const [target]=await inferenceRoutes(ledger,{...discovery,provider,signal});
+      if (target) return target;
+    } while (!signal.aborted);
+  } catch (error) {
+    if (!signal.aborted) throw error;
+  }
+  discovery.signal?.throwIfAborted();
+}
+
+async function selectTarget(ledger, {wallet, transport='auto', providerAddress, providerUrl, preferredProvider, signal}, limits) {
   const {state} = ledger;
   requireValue(['auto','direct','relay'].includes(transport),400,'Transport must be auto, direct or relay');
   if (providerAddress !== undefined) {
@@ -36,13 +54,27 @@ async function selectTarget(ledger, {wallet, transport='auto', providerAddress, 
     target.latencyMs = await probeProvider(target,state.chainId,limits.maxOutputTokens,limits.reasoning,limits.chatProtocol);
     return target;
   }
-  const discovery = {payer:wallet.address,transport,...limits};
-  if (!providerAddress && preferredProvider && state.providers.includes(preferredProvider)) {
+  if (state.providers.length===1 && state.providers[0]===wallet.address) {
+    throw Object.assign(Error('This wallet is the only registered provider. Use a different funded requester wallet.'),{
+      status:503,code:'self_provider_only'});
+  }
+  const discovery = {payer:wallet.address,transport,signal,...limits};
+  if (!providerAddress && preferredProvider && preferredProvider!==wallet.address && state.providers.includes(preferredProvider)) {
     const [warm] = await inferenceRoutes(ledger,{...discovery,provider:preferredProvider});
     if (warm) return warm;
-    discovery.excludeProvider = preferredProvider;
+    // Some relays hide a provider while it is serving another request. A short
+    // wait can reuse its resident prefix without resubmitting a paid job.
+    if (transport==='relay') {
+      const ready=await waitForWarmRelay(ledger,discovery,preferredProvider);
+      if (ready) return ready;
+    } else discovery.excludeProvider = preferredProvider;
   }
   const [target] = await inferenceRoutes(ledger,{...discovery,provider:providerAddress});
+  signal?.throwIfAborted();
+  if (!target && transport==='relay') {
+    throw Object.assign(Error('No compatible encrypted GPUChain provider is ready for this wallet.'),{
+      status:503,code:'no_encrypted_provider'});
+  }
   requireValue(target,503,limits.chatProtocol
     ? 'No available chat-protocol provider for this payer and token budget'
     : 'No available registered provider responded. Check advertised endpoints with routes.');

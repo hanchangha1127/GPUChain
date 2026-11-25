@@ -45,6 +45,11 @@ test('CLI settles a Strata completion, transfers credits, verifies a follower an
         let body = '';
         for await (const part of req) body += part;
         const obj = await handler(req.url,body ? JSON.parse(body) : undefined);
+        if (obj instanceof Response) {
+          res.writeHead(obj.status);
+          res.end(await obj.text());
+          return;
+        }
         res.setHeader('content-type','application/json');
         res.end(JSON.stringify(obj));
       } catch (e) {
@@ -72,6 +77,7 @@ test('CLI settles a Strata completion, transfers credits, verifies a follower an
     await run(...register,'seq.json');
     await assert.rejects(run(...register,'seq.json'),/already registered/);
     const strata = await serve((path,body) => {
+      if (path === '/api-monitor') return new Response(null,{status:404});
       if (path === '/metrics') return {engine:{model,max_context:262144,kv:'int8',gen:1},live:{}};
       if (path === '/v1/models') return {data:[{id:model,status:{value:'loaded'},context_length:262144}]};
       if (path === '/v1/messages/count_tokens') return {input_tokens:64};

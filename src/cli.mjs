@@ -43,6 +43,7 @@ const usage = `GPUChain
   add-validator --wallet SEQUENCER_KEY --address ADDRESS [--genesis FILE] [--ledger URL]
   set-provider-endpoint --genesis FILE --wallet SEQUENCER_KEY --address ADDRESS (--url URL | --withdraw) [--ledger URL]
 Client commands default to the pinned public network and verify its signed operating stage.
+Public chat uses the encrypted relay by default. Direct endpoints are explicit.
 Custom genesis files default to http://127.0.0.1:8787. Strata defaults to http://127.0.0.1:8000/v1.`;
 
 const flags = {
@@ -138,8 +139,9 @@ async function chat(v, wallet, ledger, resolveLedger) {
   if ((v.text !== undefined) === (v['text-file'] !== undefined)) throw Error('Supply one of --text and --text-file');
   const prompt = v.text ?? await readFile(v['text-file'],'utf8');
   if (!prompt.trim()) throw Error('Prompt is empty');
+  const transport=v.transport ?? (ledger.state.chainId===publicGenesis.hash && !v['provider-url'] ? 'relay' : 'auto');
   return purchaseChat({
-    wallet, messages:[{role:'user',content:prompt}], transport:v.transport,
+    wallet, messages:[{role:'user',content:prompt}], transport,
     providerAddress:v['provider-address'], providerUrl:v['provider-url'] === undefined ? undefined : endpoint(v['provider-url']),
     maxInputTokens:v['max-input'] === undefined ? undefined : uint(v['max-input'],'max-input',1,CONTEXT),
     maxOutputTokens:v['max-output'] === undefined ? undefined : uint(v['max-output'],'max-output',1,CONTEXT),

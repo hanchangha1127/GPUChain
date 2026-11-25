@@ -29,11 +29,16 @@ async function fixture(t, onGenerate, config = {}) {
   const messages = [{ role: 'user', content: '인사해 줘' }];
   let completions = 0;
   const counts = [], chats = [];
+  const privacy = {monitorStatus:404, backendError:null};
   const backend = await listen(t, http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, 'Bearer test-secret');
     let out;
     if (req.url === '/v1/models') out = { data: catalog };
     else if(req.url === '/metrics') out=metrics;
+    else if (req.url === '/api-monitor') {
+      res.statusCode=privacy.monitorStatus;
+      return res.end();
+    }
     else if (req.url === '/v1/messages/count_tokens' || req.url === '/v1/chat/completions') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -45,6 +50,10 @@ async function fixture(t, onGenerate, config = {}) {
         chats.push(input);
         completions++;
         if (onGenerate) await onGenerate();
+        if (privacy.backendError) {
+          res.statusCode=500;
+          return res.end(JSON.stringify({error:privacy.backendError}));
+        }
         out = { model: modelId, choices: [{ finish_reason: 'stop', message }], usage };
       }
     } else res.statusCode = 404;
@@ -64,7 +73,8 @@ async function fixture(t, onGenerate, config = {}) {
       body: JSON.stringify({ request, signature: sign(payer.privateKey, request), messages, ...body }) });
     return { status: res.status, data: await res.json() };
   }
-  return { url, model, catalog, metrics, usage, message, messages, counts, chats, request, submit, wallet, completions: () => completions, state };
+  return { url, model, catalog, metrics, usage, message, messages, counts, chats, request, submit, wallet, payer, privacy,
+    completions: () => completions, state };
 }
 
 test('loaded RYZENStrata profile, measured usage, receipt signature and retry', async t => {
@@ -88,6 +98,34 @@ test('loaded RYZENStrata profile, measured usage, receipt signature and retry', 
   f.request.expiresAt++;
   assert.equal((await f.submit()).status, 409);
   assert.equal(f.completions(), 1);
+});
+
+test('a native request monitor blocks generation and native failure text stays inside the adapter', async t => {
+  const f=await fixture(t);
+  for (const monitorStatus of [200,401,403]) {
+    f.privacy.monitorStatus=monitorStatus;
+    const {status,data}=await f.submit();
+    assert.equal(status,503);
+    assert.equal(data.code,'REQUEST_MONITOR_UNSAFE');
+  }
+  assert.equal(f.completions(),0);
+  assert.deepEqual(f.counts,[]);
+  f.privacy.monitorStatus=404;
+  f.privacy.backendError='PRIVATE_BACKEND_CONTEXT';
+  assert.deepEqual(await f.submit(),{status:502,data:{error:'Strata returned HTTP 500'}});
+  assert.equal(f.completions(),1);
+});
+
+test('invalid tool arguments never appear in the provider error body', async t => {
+  const f=await fixture(t);
+  const chatOptions={};
+  const messages=[...f.messages,{role:'assistant',tool_calls:[{
+    id:'one',type:'function',function:{name:'test',arguments:'PRIVATE_ARGUMENT_TEXT'}
+  }]}];
+  const request={...f.request,chatOptionsHash:hash(chatOptions),messagesHash:hash(messages)};
+  const reply=await f.submit({request,signature:sign(f.payer.privateKey,request),messages,chatOptions});
+  assert.deepEqual(reply,{status:400,data:{error:'Invalid chat options or messages'}});
+  assert.equal(f.completions(),0);
 });
 
 test('signed effort and reasoning budget reach both Strata APIs and bind the result without charging twice', async t => {

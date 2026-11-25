@@ -4,6 +4,7 @@ import test from 'node:test';
 import { purchaseChat } from '../src/consumer-chat.mjs';
 import { generateWallet, hash, sign, verify } from '../src/crypto.mjs';
 import { createGenesis, createBlock, replay, applyBlock, CONTEXT, MODEL } from '../src/ledger.mjs';
+import { makeRelayKeyPair, openRelayBox } from '../src/relay-crypto.mjs';
 
 async function listen(t, handler) {
   const server=createServer(async (req,res)=>{
@@ -128,4 +129,42 @@ test('partial output, mismatched reasoning or tool arguments, and an unsigned fi
   }
   assert.equal(warm.calls,4);
   assert.equal(other.calls,0);
+});
+
+test('encrypted discovery briefly waits for the previous provider before sending a follow-up',async t=>{
+  const payer=generateWallet(), warm=generateWallet(), cold=generateWallet();
+  const keys=makeRelayKeyPair();
+  const chainId=hash('warm provider discovery'), prompt='private follow-up marker';
+  const state={chainId,providers:[warm.address,cold.address],
+    nonces:{},balances:{[payer.address]:100_000_000},maxOutputTokens:128};
+  let reads=0, submit;
+  const offer=(wallet,publicKey)=>{
+    const issuedAt=Date.now();
+    const payload={domain:'gpuchain/relay-presence/v1',chainId,provider:wallet.address,publicKey,
+      model:MODEL,contextWindow:CONTEXT,kvCache:{k:'Q8',v:'Q8'},chatProtocol:1,
+      available:true,maxOutputTokens:128,issuedAt,expiresAt:issuedAt+60_000};
+    return {payload,signature:sign(wallet.privateKey,payload)};
+  };
+  const coldKey=makeRelayKeyPair().publicKey;
+  const url=await listen(t,async (req,res)=>{
+    if (req.url==='/v1/relay/providers') {
+      const providers=[offer(cold,coldKey)];
+      if (++reads>1) providers.push(offer(warm,keys.publicKey));
+      return res.end(JSON.stringify({chainId,providers}));
+    }
+    assert.equal(req.url,'/v1/relay/submit');
+    submit=await body(req);
+    res.writeHead(409);
+    res.end(JSON.stringify({error:'Fixture stops after dispatch verification'}));
+  });
+  const resolveLedger=async()=>({url,state});
+  await assert.rejects(purchaseChat({wallet:payer,transport:'relay',preferredProvider:warm.address,
+    messages:[{role:'user',content:prompt}],chatOptions:{},maxInputTokens:128,maxOutputTokens:16},
+  {resolveLedger}),/Fixture stops after dispatch verification/);
+  assert.equal(reads,2);
+  assert.equal(submit.payload.provider,warm.address);
+  assert.notEqual(submit.payload.requestHash,hash(prompt));
+  assert.doesNotMatch(JSON.stringify(submit),/private follow-up marker/);
+  const clear=openRelayBox(keys.privateKey,submit.payload.clientKey,submit.payload,'request',submit.box);
+  assert.equal(clear.messages[0].content,prompt);
 });

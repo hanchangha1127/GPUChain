@@ -8,7 +8,8 @@ export function relayOrigins(ledger) {
 
 // Direct measurements include the provider round trip. A relay measurement is
 // the client's round trip to the mailbox, so prefer a proven direct route in auto.
-export async function inferenceRoutes(ledger,{transport='auto',payer,maxOutputTokens=1,reasoning=false,chatProtocol=false,provider,excludeProvider}={}) {
+export async function inferenceRoutes(ledger,{transport='auto',payer,maxOutputTokens=1,reasoning=false,chatProtocol=false,provider,excludeProvider,signal}={}) {
+  signal?.throwIfAborted();
   if (!['auto','direct','relay'].includes(transport)) throw Error('Transport must be auto, direct or relay');
   const state = ledger.checkpoint?.state ?? ledger.state;
   const eligible = new Set(state.providers.filter(a=>a!==payer && a!==excludeProvider && (!provider || provider===a)));
@@ -17,7 +18,8 @@ export async function inferenceRoutes(ledger,{transport='auto',payer,maxOutputTo
   const result = direct.filter(r=>eligible.has(r.provider)).map(r=>({...r,transport:'direct',latencyKind:'provider-rtt'}));
   if (transport==='direct') return result;
   const batches = await Promise.allSettled(relayOrigins(ledger).map(url=>
-    listRelayOffers(url,state.chainId,{maxOutputTokens,reasoning,chatProtocol})));
+    listRelayOffers(url,state.chainId,{maxOutputTokens,reasoning,chatProtocol,signal})));
+  signal?.throwIfAborted();
   const relayed = batches.flatMap(b=>b.status==='fulfilled' ? b.value : []).sort((a,b)=>a.latencyMs-b.latencyMs);
   const seen = new Set(result.map(r=>r.provider));
   for (const r of relayed) {

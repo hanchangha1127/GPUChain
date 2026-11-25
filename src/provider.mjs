@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { hash, sign, verify } from './crypto.mjs';
 import { charge, CONTEXT, MODEL } from './ledger.mjs';
@@ -152,7 +153,7 @@ function checkRequest({ request, signature, messages, chatOptions }, chainId, pr
     requireValue(typeof request.chatOptionsHash === 'string' && chatOptions && request.chatOptionsHash === hash(chatOptions) &&
       Array.isArray(messages) && request.messagesHash === hash(messages), 400,'Invalid signed chat options or messages');
     try { return {messages:normalizeChatMessages(messages),chatOptions:normalizeChatOptions(chatOptions)}; }
-    catch (err) { throw new ProviderError(400,err.message); }
+    catch { throw new ProviderError(400,'Invalid chat options or messages'); }
   }
   requireValue(Array.isArray(messages) && messages.length > 0 && messages.length <= 4096, 400,
     'Expected a nonempty text conversation');
@@ -168,6 +169,8 @@ function checkRequest({ request, signature, messages, chatOptions }, chainId, pr
 
 export function createStrataBackend({strataUrl = 'http://127.0.0.1:8000/v1', engine = 'ryzenstrata', modelId, apiKey} = {}) {
   const base = backendBase(strataUrl);
+  const origin = new URL(base).origin;
+  const auth = apiKey ? {authorization:'Bearer '+apiKey} : {};
   requireValue(engine==='ryzenstrata' || engine==='strata',400,'Unknown Strata engine');
   const requested = modelId ?? (engine==='ryzenstrata' ? 'qwen3.8-flash-next-q2_0' : undefined);
   if (requested!==undefined) {
@@ -177,22 +180,33 @@ export function createStrataBackend({strataUrl = 'http://127.0.0.1:8000/v1', eng
   }
 
   async function backend(path, body, deadline = 10_000, root = base) {
-    const headers = {};
-    if (apiKey) headers.authorization = 'Bearer ' + apiKey;
     try {
-      return await requestJson(root + path, { headers, body, timeoutMs: deadline, maxBytes: MAX_BYTES });
+      return await requestJson(root + path, { headers:auth, body, timeoutMs: deadline, maxBytes: MAX_BYTES });
     } catch (err) {
       if (err.status) throw new ProviderError(502, 'Strata returned HTTP ' + err.status);
       throw new ProviderError(503, 'Could not reach the configured Strata backend');
     }
   }
 
+  async function checkRequestMonitor(deadline = 10_000) {
+    let response;
+    try {
+      // The monitor page is a capability check. Never fetch its request records.
+      response=await fetch(origin+'/api-monitor',{headers:auth,redirect:'error',signal:AbortSignal.timeout(deadline)});
+    } catch { throw new ProviderError(503,'Could not check the Strata request monitor'); }
+    await response.body?.cancel().catch(()=>{});
+    if (![404,405,501].includes(response.status)) {
+      throw new ProviderError(503,'Disable the Strata API request monitor to offer GPUChain inference',
+        {code:'REQUEST_MONITOR_UNSAFE'});
+    }
+  }
+
   async function profile(deadline) {
     const [catalog,metrics]=await Promise.all([
-      backend('/models',undefined,deadline),backend('/metrics',undefined,deadline,new URL(base).origin).catch(()=>{
+      backend('/models',undefined,deadline),backend('/metrics',undefined,deadline,origin).catch(()=>{
         throw new ProviderError(503,'Strata runtime KV metrics are unavailable',{code:'KV_CACHE_PRECISION',
           kvCache:{k:null,v:null},minimumKvBits:8,source:'/metrics.engine'});
-      })
+      }),checkRequestMonitor(deadline)
     ]);
     const model=selectModel(catalog,engine,requested);
     return {...model,...runtimePrecision(metrics,model),engine};
@@ -201,7 +215,7 @@ export function createStrataBackend({strataUrl = 'http://127.0.0.1:8000/v1', eng
     let response;
     try {
       response=await requestJsonResponse(base+'/chat/completions', {body,signal,timeoutMs:deadline,maxBytes:MAX_BYTES,
-        headers:{accept:'text/event-stream',...(apiKey ? {authorization:'Bearer '+apiKey} : {})}});
+        headers:{accept:'text/event-stream',...auth}});
       return await readStrataCompletion(response,body.model,onDelta);
     } catch (err) {
       if (signal.aborted) throw signal.reason;
@@ -224,9 +238,38 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
   const seen = new Map();
   let busy = false;
   let activeProfile;
-  // Cache only the latest response so a dropped connection can be retried without retaining every chat.
+  // Keep only one encrypted retry receipt, with a key scoped to this process.
+  const retryKey = randomBytes(32);
   let previous;
   let clearPrevious;
+  function erasePrevious() {
+    clearTimeout(clearPrevious);
+    previous?.ciphertext.fill(0);
+    previous=undefined;
+  }
+  function saveRetry(requestHash,result,expiresAt,stage) {
+    const iv=randomBytes(12);
+    const cipher=createCipheriv('aes-256-gcm',retryKey,iv);
+    cipher.setAAD(Buffer.from(requestHash,'hex'));
+    const plaintext=Buffer.from(JSON.stringify(result));
+    try {
+      const ciphertext=Buffer.concat([cipher.update(plaintext),cipher.final()]);
+      erasePrevious();
+      previous={hash:requestHash,ciphertext,iv,tag:cipher.getAuthTag(),expiresAt,stage};
+      clearPrevious=setTimeout(erasePrevious,Math.max(1,expiresAt-Date.now()));
+      clearPrevious.unref();
+    } finally { plaintext.fill(0); }
+  }
+  function retryResult(entry) {
+    const {hash:requestHash,ciphertext,iv,tag}=entry;
+    const decipher=createDecipheriv('aes-256-gcm',retryKey,iv);
+    decipher.setAAD(Buffer.from(requestHash,'hex'));
+    decipher.setAuthTag(tag);
+    // GCM releases most bytes from update(), but they are usable only after final() authenticates.
+    const plaintext=decipher.update(ciphertext);
+    try { decipher.final(); return JSON.parse(plaintext.toString('utf8')); }
+    finally { plaintext.fill(0); }
+  }
 
   // Coalesce simultaneous readiness checks and avoid a backend call for each RTT sample.
   // Inference independently checks the live profile immediately before generation.
@@ -270,10 +313,10 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
     const key = request.payer + ':' + request.nonce;
     const now = Date.now();
     for (const [id, until] of seen) if (until <= now) seen.delete(id);
-    if (previous && previous.expiresAt <= now) previous = undefined;
+    if (previous && previous.expiresAt <= now) erasePrevious();
     if (previous?.hash === requestHash) {
       requireValue(previous.stage===stage,409,'Network stage changed since the previous receipt');
-      const result=previous.result;
+      const result=retryResult(previous);
       if (onDelta) {
         const {tool_calls,...delta}=result.message;
         if (tool_calls) delta.tool_calls=tool_calls.map((call,index)=>({index,...call}));
@@ -354,10 +397,7 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
       inputTokens, cachedTokens, outputTokens, ...(stage==='mainnet'?{kvCache}: {}) };
     const result = { message, ...(chatOptions ? {finishReason} : {}), payload, providerSignature: sign(wallet.privateKey, payload) };
     seen.set(key, request.expiresAt);
-    previous = { hash: requestHash, result, expiresAt: request.expiresAt, stage };
-    clearTimeout(clearPrevious);
-    clearPrevious = setTimeout(() => { previous = undefined; }, Math.max(1, request.expiresAt - Date.now()));
-    clearPrevious.unref();
+    saveRetry(requestHash,result,request.expiresAt,stage);
     return result;
   }
 
@@ -423,6 +463,6 @@ export function createProviderServer({ wallet, chainId, ledgerUrl, strataUrl, en
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
   server.maxConnections = 32;
-  server.on('close', () => { clearTimeout(clearPrevious); previous = undefined; seen.clear(); });
+  server.on('close', () => { erasePrevious(); retryKey.fill(0); seen.clear(); });
   return server;
 }

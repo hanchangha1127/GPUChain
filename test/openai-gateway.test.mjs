@@ -74,10 +74,22 @@ test('nonstream chat forwards tool history, usage and reasoning; payment errors 
   assert.equal(last.chatOptions.tools[0].function.name,'weather');
   assert.equal(last.maxOutputTokens,64);
   assert.equal(last.reasoningEffort,'medium');
+  assert.equal(last.transport,'relay');
   fail=true;
   const bad=await chat();
   assert.equal(bad.status,402);
   assert.equal((await bad.json()).error.code,'insufficient_funds');
+});
+
+test('the gateway explains why a payer cannot use its own provider wallet',async t=>{
+  const {chat}=await fixture(t,async()=>{
+    throw Object.assign(Error('underlying route diagnostic'),{status:503,code:'self_provider_only'});
+  });
+  const response=await chat();
+  assert.equal(response.status,503);
+  const {error}=await response.json();
+  assert.equal(error.code,'self_provider_only');
+  assert.match(error.message,/different funded requester wallet/);
 });
 
 test('SSE exposes a genuine first delta before settlement and finishes a tool call with final-only usage', {timeout:8000}, async t=>{
@@ -158,9 +170,11 @@ test('gateway prefers the settled provider across tool turns, learns failover an
     if (!paid) throw Error('Invalid provider receipt');
     return {...answer,provider,usage:{...usage,cachedTokens:0}};
   });
-  assert.equal((await chat()).status,200);
-  const followup={...baseChat,tools:[tool],temperature:0.8,messages:[
-    {role:'system',content:'Updated turn context'},...baseChat.messages,
+  const initial={...baseChat,tools:[tool],temperature:0.1,messages:[
+    {role:'system',content:'Use the available tools'},...baseChat.messages]};
+  assert.equal((await chat(initial)).status,200);
+  const followup={...initial,temperature:0.8,messages:[
+    ...initial.messages,
     {role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:'sunny'},
     {role:'user',content:'What about tomorrow?'}]};
   provider=b;

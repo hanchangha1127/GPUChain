@@ -1,7 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { affinityDigest, openCacheAffinity } from './cache-affinity.mjs';
+import { affinityKeys, openCacheAffinity } from './cache-affinity.mjs';
 import { normalizeChatMessages, normalizeChatOptions } from './chat-protocol.mjs';
 import { purchaseChat } from './consumer-chat.mjs';
 import { CONTEXT, MODEL } from './ledger.mjs';
@@ -97,6 +97,10 @@ async function readBody(req) {
 
 function asGatewayError(error) {
   if (error instanceof GatewayError) return error;
+  if (error?.code==='self_provider_only') return new GatewayError(503,'self_provider_only',
+    'This wallet is the only registered provider. Use a different funded requester wallet.');
+  if (error?.code==='no_encrypted_provider') return new GatewayError(503,'no_encrypted_provider',
+    'No compatible encrypted GPUChain provider is ready for this wallet.');
   const message = String(error?.message ?? '');
   if (/insufficient balance/i.test(message)) return new GatewayError(402,'insufficient_funds','Insufficient GPUChain balance for this request budget');
   if (/no (available|fresh|eligible|ready).*provider/i.test(message)) return new GatewayError(503,'no_provider','No compatible GPUChain provider is available for this wallet');
@@ -194,8 +198,8 @@ export async function startOpenAiGateway({wallet,token,port=8792,purchase=purcha
       if (closing || controllers.size>=MAX_PENDING) throw new GatewayError(429,'gateway_busy','Local inference queue is full');
       controllers.add(controller);
       const input=parseRequest(await readBody(req),req.headers);
-      const digestKey=affinityDigest({token,payer:wallet.address,model:MODEL,session:input.session,
-        messages:input.purchase.messages});
+      const {candidates,anchors}=affinityKeys({token,payer:wallet.address,model:MODEL,session:input.session,
+        messages:input.purchase.messages,chatOptions:input.purchase.chatOptions,reasoningEffort:input.purchase.reasoningEffort});
       const meta={id:'chatcmpl-'+randomUUID(),created:Math.floor(Date.now()/1000),model:MODEL};
       const stream=input.stream ? liveStream(res,meta,signal,sseHeaders) : null;
       if (input.stream) {
@@ -211,13 +215,13 @@ export async function startOpenAiGateway({wallet,token,port=8792,purchase=purcha
       const operation=tail.then(async ()=>{
         signal.throwIfAborted();
         let preferredProvider;
-        try { preferredProvider=affinity.preferred(digestKey); }
+        try { preferredProvider=affinity.preferred(candidates); }
         catch { useMemoryAffinity(); }
-        const result=await purchase({wallet,...input.purchase,preferredProvider,signal,...(stream ? {onDelta:stream.delta} : {})});
-        try { affinity.remember(digestKey,result.provider); }
+        const result=await purchase({wallet,...input.purchase,transport:'relay',preferredProvider,signal,...(stream ? {onDelta:stream.delta} : {})});
+        try { affinity.remember(anchors,result.provider); }
         catch {
           useMemoryAffinity();
-          affinity.remember(digestKey,result.provider);
+          affinity.remember(anchors,result.provider);
         }
         return result;
       });
