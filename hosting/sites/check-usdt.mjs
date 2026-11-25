@@ -133,8 +133,8 @@ test('scan disagreements do not clear the inventory reservation or advance its c
 test('public checkout uses a same-origin script and explicit user wallet actions',async()=>{
   const page=await asset('/'),html=await page.text(),script=await (await asset('/buy.js')).text();
   assert.match(page.headers.get('content-security-policy'),/script-src 'self'/);
-  assert.match(html,/<html lang="en">/);assert.match(html,/1 USDT buys 10 GPUChain coins/);
-  assert.match(html,/Payment amount \(USDT\)/);
+  assert.match(html,/<html lang="en">/);assert.match(html,/Claim 100 starter coins/);
+  assert.match(html,/USDT payments temporarily paused/);
   for(const lang of storeLocales)assert.ok(html.includes('value="'+lang+'"'));
   for(const key of Object.keys(storeMessages)){
     const values=storeMessages[key];assert.equal(values.length,5,key);
@@ -142,7 +142,8 @@ test('public checkout uses a same-origin script and explicit user wallet actions
     for(const v of values){assert.ok(v.length>0,key);assert.deepEqual(vars(v),vars(values[0]),key);}
   }
   assert.match(html,/src="\/buy.js"/);assert.match(html,/href="\/ledger"/);
-  assert.match(script,/personal_sign/);assert.match(script,/eth_sendTransaction/);
+  assert.doesNotMatch(script,/personal_sign|eth_sendTransaction|eth_requestAccounts|\/v1\/sales\/quote/);
+  assert.doesNotMatch(html,/id="(?:pay|merchant|connect|reserve)"/);
   assert.doesNotThrow(()=>new vm.Script(script));
 });
 
@@ -162,65 +163,91 @@ test('ledger localizes the stage and the authority independently and shares the 
     assert.equal(saved.get('gpuchain.wallet.language'),lng);assert.equal(height.textContent,BigInt(1203).toLocaleString(lng));}
 });
 
-test('checkout shows ten coins for one USDT and transfers only the quoted USDT on either network',async()=>{
-  for(const id of [1,56]){
-    const {claim}=fixture(id), fields=new Map(), calls=[];
-    const get=key=>{
-      if(!fields.has(key)) fields.set(key,{value:'',events:{},addEventListener(type,cb){this.events[type]=cb;}});
-      return fields.get(key);
-    };
-    get('network').value=String(id);get('amount').value='1';
-    let order,remaining='10000000000';
-    const networkStatus={accepting:true,paymentReady:true};
-    const fetcher=async(path,options)=>{
-      const input=options.body && JSON.parse(options.body);
-      if(path==='/v1/sales/status') return Response.json({accepting:true,coinsPerUsdt:10,
-        maxOrderMicro:'10000000',inventoryNano:remaining,networks:{[id]:networkStatus}});
-      if(path==='/v1/sales/quote') {
-        order={...input,id:'a'.repeat(64),status:'reserved',coinsPerUsdt:10,amountNano:remaining,expiresAt:Date.now()+60000};
-        remaining='0';networkStatus.accepting=false;
-      } else if(path==='/v1/sales/claim') {
-        assert.equal(input.orderId,order.id);assert.equal(input.txHash,claim.txHash);calls.push('claim');order.status='delivered';
-      }
-      return Response.json(order);
-    };
-    const ethereum={async request({method,params}) {
-      if(method==='eth_chainId') return '0x'+id.toString(16);
-      if(method==='eth_accounts'||method==='eth_requestAccounts') return [payer];
-      calls.push(method);
-      if(method==='personal_sign'){
-        const signed=Buffer.from(params[0].slice(2),'hex').toString('utf8');
-        assert.match(signed,/USDT micro-units: 1000000\nPrice: 1 USDT = 10 GPUChain coins\nGPUChain nanocoins to receive: 10000000000/);
-        return claim.signature;
-      }
-      assert.equal(method,'eth_sendTransaction');
-      assert.equal(params[0].data,transferData('1000000',NETWORKS[id].decimals,MERCHANT));
-      return claim.txHash;
-    }};
-    const saved=new Map(id===56?[['gpuchain.wallet.language','ja']]:[]),root={lang:'en'},node={dataset:{i18n:'signFirst'}};
-    vm.runInNewContext(await (await asset('/buy.js')).text(),{document:{documentElement:root,getElementById:get,querySelectorAll(){return [node];},addEventListener(){}},window:{ethereum},
-      location:{search:'?gpuAddress='+claim.gpuAddress},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
-      fetch:fetcher,URLSearchParams,AbortSignal,Date,TextEncoder,crypto:globalThis.crypto,setInterval:()=>{}});
-    await new Promise(r=>setImmediate(r));
-    assert.equal(root.lang,id===56?'ja':'en');
-    for(const [i,lng] of storeLocales.entries()){
-      get('language').events.change({target:{value:lng}});
-      assert.equal(root.lang,lng);assert.equal(saved.get('gpuchain.wallet.language'),lng);
-      assert.equal(node.textContent,storeMessages.signFirst[i]);
-      assert.equal(get('gpu').placeholder,storeMessages.gpuHint[i]);
-      assert.ok(get('cost').textContent.includes('10'));
+async function openCreditPage(fetcher,{saved=new Map(),search=''}={}) {
+  const fields=new Map(), root={}, nodes=['starterTitle','salesPaused'].map(i18n=>({dataset:{i18n}}));
+  const get=id=>{
+    if(!fields.has(id)) fields.set(id,{value:'',events:{},addEventListener(type,fn){this.events[type]=fn;}});
+    return fields.get(id);
+  };
+  vm.runInNewContext(await (await asset('/buy.js')).text(),{
+    document:{documentElement:root,getElementById:get,querySelectorAll:()=>nodes,addEventListener(){}},
+    location:{search},localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
+    fetch:fetcher,URLSearchParams,AbortSignal,Date,setInterval:()=>{}
+  });
+  await new Promise(resolve=>setImmediate(resolve));
+  return {get,root,nodes};
+}
+
+test('starter form verifies existing addresses, excludes stale lookups and submits only one explicit claim',async()=>{
+  const old='1'.repeat(64), address='a'.repeat(64), unknown='b'.repeat(64);
+  const prior=Promise.withResolvers(), pending=Promise.withResolvers(), claims=[];
+  const eligible={active:true,eligible:true,canClaim:true,claimed:false,remainingClaims:1_000_000};
+  const {get,root,nodes}=await openCreditPage(async(path,{method,body})=>{
+    if(method==='GET') {
+      const a=new URL(path,'https://local.invalid').searchParams.get('address');
+      if(a===old) await prior.promise;
+      return Response.json({address:a,...eligible,...(a===unknown||a===old?
+        {eligible:false,canClaim:false,reason:'wallet_not_recorded'}:{})});
     }
-    get('amount').value='1,25';get('amount').events.input();
-    assert.match(get('cost').textContent,/12,5 coins GPUChain/);
-    get('language').events.change({target:{value:'ko'}});
-    assert.equal(get('amount').value,'1.25');assert.match(get('cost').textContent,/12\.5 GPUChain 코인/);
-    get('amount').value='1';get('amount').events.input();
-    await get('connect').onclick();await get('reserve').onclick();
-    assert.equal(get('orderId').textContent,'a'.repeat(64));
-    assert.match(get('terms').textContent,/결제 1 USDT · 받을 금액 10 GPUChain 코인/);
-    await get('pay').onclick();
-    assert.deepEqual(calls,['personal_sign','eth_sendTransaction','claim']);
-    await get('pay').onclick();
-    assert.equal(calls.length,3);
+    assert.equal(path,'/v1/starter/claim');
+    claims.push(JSON.parse(body));await pending.promise;
+    return Response.json({address,coins:'100',claimed:true,alreadyClaimed:false});
+  });
+  const input=get('starterAddress'), claim=get('starterClaim'), status=get('starterStatus');
+  assert.equal(claim.disabled,true);
+  input.value='INVALID';await input.events.input();
+  assert.equal(status.textContent,storeMessages.gpuInvalid[0]);
+  input.value=old;const oldLookup=input.events.input();
+  input.value=address.toUpperCase();await input.events.input();prior.resolve();await oldLookup;
+  assert.equal(claim.disabled,false); assert.deepEqual(claims,[]);
+  for(const [index,lang] of storeLocales.entries()) {
+    get('language').events.change({target:{value:lang}});
+    assert.equal(root.lang,lang);assert.equal(nodes[1].textContent,storeMessages.salesPaused[index]);
+    assert.equal(status.textContent,storeMessages.starterEligible[index]);
   }
+  const first=claim.onclick();await claim.onclick();
+  assert.equal(claim.disabled,true);assert.deepEqual(claims,[{address}]);
+  pending.resolve();await first;
+  assert.equal(claim.disabled,true);assert.equal(status.textContent,storeMessages.starterDone[4]);
+  input.value=unknown;await input.events.input();await claim.onclick();
+  assert.equal(status.textContent,storeMessages.starterUnknown[4]);assert.deepEqual(claims,[{address}]);
+});
+
+test('starter form reports failures and rechecks the ledger after an uncertain claim without posting twice',async()=>{
+  const address='c'.repeat(64);
+  let mode='offline',posts=0;
+  const {get}=await openCreditPage(async(path,{method})=>{
+    if(method==='GET'){
+      if(mode==='offline') return Response.json({error:'unavailable'},{status:503});
+      return Response.json({address,active:mode!=='closed',eligible:true,canClaim:mode==='ready',
+        claimed:mode==='done',remainingClaims:mode==='closed'?0:5});
+    }
+    posts++;mode='done';throw Error('Delivery reply lost');
+  },{search:'?gpuAddress='+address});
+  assert.equal(get('starterStatus').textContent,storeMessages.starterUnavailable[0]);
+  mode='closed';await get('starterCheck').onclick();
+  assert.equal(get('starterStatus').textContent,storeMessages.starterClosed[0]);
+  mode='ready';await get('starterCheck').onclick();await get('starterClaim').onclick();
+  assert.equal(get('starterStatus').textContent,storeMessages.starterUnconfirmed[0]);
+  assert.equal(get('starterClaim').disabled,true);await get('starterCheck').onclick();
+  assert.equal(get('starterStatus').textContent,storeMessages.starterAlready[0]);assert.equal(posts,1);
+});
+
+test('suspended checkout can recover existing orders and verify an already sent transfer without requesting a payment',async()=>{
+  const id='e'.repeat(64),txHash='0x'+'d'.repeat(64),gpuAddress='a'.repeat(64),requests=[];
+  let status='reserved';
+  const {get}=await openCreditPage(async(path,{method,body})=>{
+    requests.push([method,path]);
+    if(method==='POST') {
+      assert.equal(path,'/v1/sales/claim');assert.deepEqual(JSON.parse(body),{orderId:id,txHash});
+      status='delivered';
+    } else assert.equal(path,'/v1/sales/orders/'+id);
+    return Response.json({id,status,chainId:56,payer,gpuAddress,amountMicro:'1000000',amountNano:'10000000000',
+      expiresAt:time*1000,txHash:status==='delivered'?txHash:null});
+  });
+  get('restoreId').value=id;await get('restore').onclick();
+  assert.equal(get('orderId').textContent,id);assert.equal(get('orderStatus').textContent,storeMessages.unpaidPaused[0]);
+  get('hash').value=txHash;await get('submitHash').onclick();
+  assert.equal(get('hashCheck').hidden,true);assert.match(get('orderStatus').textContent,/Delivered/);
+  assert.deepEqual(requests.map(([verb])=>verb),['GET','POST','GET']);
 });

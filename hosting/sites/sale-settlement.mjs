@@ -5,9 +5,9 @@ import { addressFromPrivateKey, hash, sign, verify } from '../../src/crypto.mjs'
 import { checkReadiness, limitedJson } from '../../src/enrollment.mjs';
 import { DISTRIBUTION_RESERVE, heldSaleAmount, saleDeliveryEffect, saleHoldCommitment, saleHoldEffect } from '../../src/ledger.mjs';
 import { SALE_NANO_PER_MICRO, SALE_TERMS } from '../../src/sale-policy.mjs';
+import { HOSTED_HEAD_BYTES as MAX_HEAD } from './sale-holds.mjs';
 
 const reserve = DISTRIBUTION_RESERVE;
-const MAX_HEAD = 1_900_000;
 const need = (ok,status,message) => { if (!ok) throw Object.assign(Error(message),{status}); };
 
 function signer(env) {
@@ -25,7 +25,7 @@ async function remote(url,path,body) {
 }
 
 /** Read the authoritative signed head, including after the Sites bootstrap retires. */
-async function ledger(db) {
+export async function readHostedLedger(db,{starterGrants=false}={}) {
   const row=await db.prepare('SELECT tip,checkpoint FROM ledger_head WHERE id=1').first();
   need(row,503,'Bootstrap checkpoint unavailable');
   const initial=authenticate(JSON.parse(row.checkpoint),reserve.chainId);
@@ -41,7 +41,8 @@ async function ledger(db) {
     const head=authenticate(await remote(member.url,'/v1/checkpoint'),reserve.chainId);
     verifyAdvance(initial,head);
     let capable=true;
-    try {await checkReadiness({chainId:reserve.chainId,address:member.address,origin:member.url,instanceId:member.instanceId},fetch,true);}
+    try {await checkReadiness({chainId:reserve.chainId,address:member.address,origin:member.url,instanceId:member.instanceId},
+      fetch,true,starterGrants,starterGrants);}
     catch {capable=false;}
     return {head,url:member.url,capable};
   }));
@@ -184,7 +185,7 @@ export async function deliverVerifiedOrder(db,order,owner,{read,commit}) {
 }
 
 export async function readSaleInventory(env,db) {
-  const {head,quorumEscrowSupported=false}=await ledger(db), state=head.state;
+  const {head,quorumEscrowSupported=false}=await readHostedLedger(db), state=head.state;
   const fence={bootstrapTip:head.authority?null:state.tip,ledgerSalePaymentId:state.lastSale?.paymentId ?? null,
     networkStage:state.networkStage === 'mainnet'?'mainnet':'testnet'};
   fence.quorumFence=head.authority?'retired:'+hash(head.authority):null;
@@ -198,7 +199,7 @@ export async function readSaleInventory(env,db) {
   return {...capacity(state,signer(env)),...fence};
 }
 
-async function quorumCommit(live,tx) {
+export async function quorumCommit(live,tx) {
   need(live.url && live.quorumEscrowSupported,503,'No escrow-capable validator majority');
   const reply=await remote(live.url,'/v1/transactions',tx);
   verifyConsensusAck(reply,tx,live.head.genesis,live.head.authority);
@@ -237,15 +238,15 @@ export async function updateVerifiedHold(db,order,owner,acquire,{read,commit}) {
 }
 
 export function ensureSaleHold(env,db,order) {
-  return updateVerifiedHold(db,order,signer(env),true,{read:()=>ledger(db),commit:quorumCommit});
+  return updateVerifiedHold(db,order,signer(env),true,{read:()=>readHostedLedger(db),commit:quorumCommit});
 }
 
 export function releaseSaleHold(env,db,order) {
-  return updateVerifiedHold(db,order,signer(env),false,{read:()=>ledger(db),commit:quorumCommit});
+  return updateVerifiedHold(db,order,signer(env),false,{read:()=>readHostedLedger(db),commit:quorumCommit});
 }
 
 export function settleOrder(env,db,order) {
-  return deliverVerifiedOrder(db,order,signer(env),{read:()=>ledger(db),async commit(live,tx,row) {
+  return deliverVerifiedOrder(db,order,signer(env),{read:()=>readHostedLedger(db),async commit(live,tx,row) {
     if (live.url) return quorumCommit(live,tx);
     const sequencingKey=env.GPUCHAIN_SIGNER_PKCS8;
     const sequencingWallet={privateKey:sequencingKey,address:addressFromPrivateKey(sequencingKey)};

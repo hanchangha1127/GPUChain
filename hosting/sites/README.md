@@ -16,9 +16,13 @@ The pinned genesis hash is `a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3
 
 The public mainnet is a small pilot named `gpuchain-mainnet-1`. Its signed in-place promotion keeps the original genesis hash, wallet addresses, balances and transaction nonces. Existing bootstrap and genesis filenames retain `testnet` for compatibility. Check the signed network state with `node src/cli.mjs verify`: the promoted checkpoint has `networkStage` equal to `mainnet`.
 
-The bootstrap operator authorizes public providers and validator candidates. An activated committee requires two of three distinct durable voters to confirm writes. The hosted store can offer 10 coins per USDT when live inventory, the reserve mandate and the two independent payment readers for the chosen chain are available. [Sale availability and payment instructions](../../docs/usdt-sales.md)
+The bootstrap operator authorizes public providers and validator candidates. The public site offers one 100-coin starter grant per recorded mainnet wallet from a reserve-authorized lifetime budget. A local wallet address becomes eligible after it appears in the verified ledger. USDT intake is paused on both networks. Historical payment reconciliation continues for previously accepted orders. [Site](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [Historical payment recovery](../../docs/usdt-sales.md)
 
 ## Hosted state
+
+The starter grant is independent of the sale mandate. The reserve owner signs `node src/cli.mjs authorize-starter-grants --wallet RESERVE_WALLET --coins 100000000`. Sites can then move exactly 100 existing reserve coins to each eligible recorded address once. `GET /v1/starter/status?address=PUBLIC_ADDRESS` checks eligibility, and `POST /v1/starter/claim` accepts a JSON object with a single `address`. Refreshing the page or submitting the same claim concurrently can credit the address only once. Use `suspend-starter-grants` to close new grants. Previous claims continue counting toward the lifetime budget.
+
+The one-million-wallet allocation is a financial ceiling. The bootstrap’s single checkpoint has a 1,900,000-byte limit shared by balances and grant records. Hosted claims pause before that limit to leave room for existing obligations and committee handover. Serving a million distinct accounts requires ledger storage and synchronization that can accommodate their state.
 
 The Worker serves the genesis, status and checkpoint, accepts signed transactions, and accepts signed validator opt-ins at `POST /v1/consensus/enroll`. The candidate feed is `GET /v1/consensus/candidates`. It uses the same validation and accounting code as the desktop sequencer. D1 stores a compact signed snapshot. A conditional update against the previous tip allows only one competing spend to commit. This first hosted version limits its serialized checkpoint to 1,900,000 bytes. Increasing the number of accounts beyond that limit requires a storage schema upgrade.
 

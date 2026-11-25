@@ -6,14 +6,15 @@ import { DIRECTORY_URL, directoryOrigins } from '../../src/peer-directory.mjs';
 import { checkoutPage, checkoutScript } from './checkout.mjs';
 import { ledgerPage, ledgerScript } from './ledger-page.mjs';
 import { salesRoute } from './sales.mjs';
-import { commitHostedTransaction, prepareSalesRetirement, retirementGuard, OUTCOME_ROW_BASE } from './sale-holds.mjs';
+import { commitHostedTransaction, prepareSalesRetirement, retirementGuard, OUTCOME_ROW_BASE, HOSTED_HEAD_BYTES } from './sale-holds.mjs';
+import { starterRoute } from './starter.mjs';
 import { OUTCOME_SLOTS, outcomeRoute, sequencerOutcome } from '../../src/transaction-outcome.mjs';
 import { canValidate, EPOCH_TOKENS, replay } from '../../src/ledger.mjs';
 import { relayRoute, purgeExpiredRelay } from '../../src/relay-service.mjs';
 
 const MAX_TX_BYTES = 16_384;
 // Leave margin for SQLite row and index overhead under D1's 2 MB per-row limit.
-const MAX_HEAD_BYTES = 1_900_000;
+const MAX_HEAD_BYTES = HOSTED_HEAD_BYTES;
 const noCache = {'cache-control':'no-store', 'x-content-type-options':'nosniff'};
 
 class HttpError extends Error {
@@ -27,21 +28,21 @@ function json(value, status = 200) {
   return Response.json(value, {status, headers:noCache});
 }
 
-async function transactionBody(request) {
+async function transactionBody(request,maxBytes=MAX_TX_BYTES) {
   const type = request.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
   if (type !== 'application/json') throw new HttpError(415, 'Expected application/json');
-  if (Number(request.headers.get('content-length')) > MAX_TX_BYTES) {
+  if (Number(request.headers.get('content-length')) > maxBytes) {
     throw new HttpError(413, 'Transaction is too large');
   }
   if (!request.body) throw new HttpError(400, 'Missing transaction');
   const reader = request.body.getReader();
-  const bytes = new Uint8Array(MAX_TX_BYTES);
+  const bytes = new Uint8Array(maxBytes);
   let length = 0;
   try {
     for (;;) {
       const {done, value} = await reader.read();
       if (done) break;
-      if (length + value.length > MAX_TX_BYTES) {
+      if (length + value.length > maxBytes) {
         await reader.cancel();
         throw new HttpError(413, 'Transaction is too large');
       }
@@ -97,7 +98,8 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
   catch (err) { throw new HttpError(400,err.message); }
   let ready;
   const production=head.state.networkStage==='mainnet';
-  try { ready = await checkReadiness(member,fetchReady,Boolean(head.state.reserveClaim),production); }
+  const starter=Boolean(head.state.starterMandate);
+  try { ready = await checkReadiness(member,fetchReady,Boolean(head.state.reserveClaim),production,starter); }
   catch { throw new HttpError(409,'Cannot verify validator readiness at the signed origin'); }
   let roster;
   try { roster = await recordCandidate(db,{payload:member,signature:intent.signature}); }
@@ -106,7 +108,7 @@ async function enroll(head, intent, wallet, db, {fetchReady,allowLoopback,readDi
 
   const probes = await Promise.allSettled(roster.candidates.map(item=>item.payload)
     .filter(candidate => canValidate(head.state,candidate.address))
-    .map(candidate => candidate.address === ready.address ? ready : checkReadiness(candidate,fetchReady,Boolean(head.state.reserveClaim),production)));
+    .map(candidate => candidate.address === ready.address ? ready : checkReadiness(candidate,fetchReady,Boolean(head.state.reserveClaim),production,starter)));
   const reachable = probes.filter(r => r.status === 'fulfilled').map(r => r.value);
   if (reachable.length < 3) return json({active:false,checkpoint:head});
   let published = [];
@@ -134,6 +136,9 @@ async function dispatch(request, env, options) {
   if (request.method === 'GET' && (path === '/' || path === '/buy')) return checkoutPage();
   if (request.method === 'GET' && path === '/buy.js') return checkoutScript();
   if (request.method === 'GET' && path === '/ledger.js') return ledgerScript();
+  if (path.startsWith('/v1/starter/')) {
+    return starterRoute(request,env,()=>transactionBody(request,512));
+  }
   if (path.startsWith('/v1/sales/')) {
     const result=await salesRoute(request,env,path);
     if(path==='/v1/sales/tick' && result.ok && request.method==='POST'){
@@ -193,7 +198,7 @@ async function dispatch(request, env, options) {
   }
   try {await commitHostedTransaction(db,head.state,next.state,checkpoint,tx.payload.type,
     tx.payload.type==='inference'?sequencerOutcome(block):undefined);}
-  catch(err){if(err.status===409)throw new HttpError(409,err.message);throw err;}
+  catch(err){if(err.status===409 || err.status===507)throw new HttpError(err.status,err.message);throw err;}
   return json({block}, 201);
 }
 

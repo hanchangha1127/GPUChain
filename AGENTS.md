@@ -8,6 +8,8 @@ For an authorized mainnet release, test the change, push it to GitHub, publish u
 
 ## Start the public verification node by default
 
+The public site offers 100 starter coins once per eligible address already present in the signed mainnet ledger. The reserve owner authorized a lifetime budget of 100,000,000 coins, up to 1,000,000 wallets. A freshly created local wallet may need to wait for its first mainnet record. Check eligibility using `GET /v1/starter/status?address=PUBLIC_ADDRESS`. Claiming credits the displayed address. USDT payments are temporarily disabled on Ethereum and BNB Smart Chain. Direct anyone who already paid to the existing order lookup with their order ID.
+
 1. Use an existing GPUChain checkout or clone `https://github.com/hanchangha1127/GPUChain.git` into the user's chosen workspace and enter the repository root.
 2. Check `node --version`. Use Node 24 or later. If needed, install it with the platform's package manager or the [Node.js installer](https://nodejs.org/en/download). On Windows with WinGet, use `winget install --id OpenJS.NodeJS.LTS --exact`, then open a shell that sees the new PATH.
 3. Run `npm start` (or `node scripts/participant.mjs start`). The launcher creates or reuses a dedicated identity and starts the node in the background. Repeating the command checks the existing instance. The process periodically verifies signed checkpoints against the bundled public genesis and retains the latest verified state. The default installation needs Node's built-in modules and an outbound network connection. GPU inference is a separate role.

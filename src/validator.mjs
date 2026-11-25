@@ -11,6 +11,7 @@ import { requestJson } from './http.mjs';
 import { canValidate, EPOCH_TOKENS, MAINNET, replay } from './ledger.mjs';
 import { isLoopbackEndpoint, normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { SALE_TERMS } from './sale-policy.mjs';
+import { STARTER_GRANT_PROTOCOL } from './starter-grants.mjs';
 import { localRelay } from './local-relay.mjs';
 import { outcomeRoute, quorumOutcome } from './transaction-outcome.mjs';
 import { openOutcomes } from './local-outcomes.mjs';
@@ -377,6 +378,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
           payload.saleEscrow=SALE_TERMS;
         }
         if (target.searchParams.get('stage')==='mainnet') payload.validatorProtocol=MAINNET.validatorProtocol;
+        if (target.searchParams.get('starter')==='1') payload.starterGrants=STARTER_GRANT_PROTOCOL;
         return send(200,{payload,signature:sign(wallet.privateKey,payload)});
       }
       if (req.method === 'GET' && path === '/v1/genesis') return send(200,genesis);

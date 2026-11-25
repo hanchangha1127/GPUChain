@@ -2,7 +2,7 @@ import { storeLocales } from './store-i18n.mjs';
 
 const words={
   title:['GPUChain ledger','GPUChain 원장','GPUChain 台帳','GPUChain 账本','Registre GPUChain'],
-  store:['Coin store','코인 상점','コインストア','代币商店','Boutique de coins'],
+  store:['Starter coins','기본 코인 지급','スターターコイン','初始代币','Coins de bienvenue'],
   language:['Language','언어','言語','语言','Langue'],
   stage:['Network stage','네트워크 단계','ネットワーク段階','网络阶段','Phase du réseau'],
   mainnet:['Mainnet','메인넷','メインネット','主网','Réseau principal'],

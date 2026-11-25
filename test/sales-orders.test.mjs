@@ -31,7 +31,7 @@ function fixture(t) {
       amountMicro:order.amountMicro,blockNumber:'103',blockHash:'0x'+'b'.repeat(64),blockTimestamp:String(Math.floor(order.createdAt/1000)),
       merchant:MERCHANT,logIndex:'0'};
   }
-  const route=createSalesRoute({verifyQuote:async q=>{assert.equal(q.signature,'fixture');},
+  const dependencies={verifyQuote:async q=>{assert.equal(q.signature,'fixture');},
     inventory:async()=>({inventoryNano:f.inventoryNano,enabled:f.enabled,networkStage:f.stage ?? 'mainnet',saleSequence:f.sequence,
       ledgerSalePaymentId:f.lastPaymentId,bootstrapTip:f.retired?null:sqlite.prepare('SELECT tip FROM ledger_head WHERE id=1').get().tip,
       mandateRemainingNano:f.inventoryNano,quorumEscrowSupported:f.quorum,quorumFence:f.quorum?'retired:authority':null,
@@ -53,7 +53,9 @@ function fixture(t) {
       f.deliveries++;
       return {sequence:1,tip:'d'.repeat(64),height:8};
     }
-  });
+  };
+  let route=createSalesRoute({...dependencies,acceptNewOrders:true});
+  f.pauseSales=()=>{route=createSalesRoute(dependencies);};
   f.call=async(name,body,auth)=>{
     const headers={'content-type':'application/json'};if(auth)headers.authorization='Bearer '+auth;
     const req=new Request('https://shop.example'+path+name,{method:body===undefined?'GET':'POST',
@@ -65,6 +67,27 @@ function fixture(t) {
   f.due=()=>sqlite.exec('UPDATE sale_orders SET scan_after=0');
   return f;
 }
+
+test('paused checkout refuses new quotes on both chains and still reconciles earlier payments once',async t=>{
+  const f=fixture(t),order=(await f.call('quote',f.quote())).value;
+  f.pauseSales();
+  const status=(await f.call('status')).value;
+  assert.equal(status.paused,true);
+  assert.equal(status.merchant,null);
+  for(const chainId of [1,56]) {
+    assert.deepEqual(status.networks[chainId],{accepting:false,paymentReady:false,reason:'sales-paused'});
+    const result=await f.call('quote',{...f.quote('2'),chainId});
+    assert.equal(result.code,503);
+    assert.equal(result.value.code,'sales_paused');
+  }
+  const reserved=(await f.call('orders/'+order.id)).value;
+  assert.equal(reserved.status,'reserved');
+  for (const field of ['payTo','token','usdtUnits']) assert.equal(reserved[field],null);
+  f.scan='paid';f.due();
+  assert.equal((await f.call('tick',{},secret)).code,200);
+  assert.equal((await f.call('orders/'+order.id)).value.status,'delivered');
+  assert.equal(f.deliveries,1);
+});
 
 test('quoting is fail-closed, idempotent, and atomic against concurrent inventory claims',async t=>{
   const f=fixture(t);

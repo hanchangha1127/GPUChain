@@ -64,7 +64,7 @@ Sites certifies three ready validators and seals its final checkpoint. Two of th
 
 ## Metering and epochs
 
-The public Sites store sells GPUChain mainnet coins at **10 coins per USDT** on Ethereum and BNB Smart Chain. Register the GPUChain destination and sign the order before transferring from the paying EVM wallet. [Store](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [Payment guide](docs/usdt-sales.md)
+The public site offers 100 starter coins once per previously recorded mainnet wallet, with a program budget of 100,000,000 coins for up to 1,000,000 wallets. Enter the public address, check eligibility and claim the grant. Newly created local addresses need a mainnet record before claiming. USDT payments on Ethereum and BNB Smart Chain are temporarily paused. Previously paid orders can still be checked using the original order ID. [Starter coins and order lookup](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
 
 The original public genesis allocates one coin. A single sequencer-signed `issue-reserve` transaction can add exactly 1,000,000,000,000 coins to the designated distribution wallet. The chain records a permanent issuance marker. After issuance, total supply is 1,000,000,000,001 coins. Wallets and transfers use exact integer nanocoins, including amounts above JavaScript's safe integer range. The reserve is an inventory of inference credits; a proposed or published sale price does not establish a dollar redemption right.
 

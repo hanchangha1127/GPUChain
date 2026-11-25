@@ -10,7 +10,7 @@ GPUChain の公開メインネット `gpuchain-mainnet-1` は、小規模な実�
 
 **ウォレットを開く** — `npm run gui` を実行するか、Windows では **GPUChain Wallet.cmd** をダブルクリックしてください。ノードを起動するか、起動中のノードを再利用してブラウザーを開きます。ローカルの画面で、ウォレットの公開アドレスと検証済み残高、ノードの同期・投票状態、ローカル推論アダプターの状態を確認できます。画面は専用のループバックポートで提供されます。実際の URL は `node scripts/open-wallet.mjs --print-url` で表示できます。 送金する場合は `GPUChain Unlock.cmd` または `npm run wallet:unlock` でワンタイムコードを取得してこのPCで入力し、受取先と金額を確認して確定してください。
 
-画面の初期言語は英語で、日本語を含む 5 言語を選択できます。`GPUChain Backup.cmd` で暗号化バックアップを作成し、復元用のパスワードを別に保管してください。公開ストアでは 1 USDT で 10 コインを購入できます。決済前に GPUChain の受取先を登録してください。[購入手順](usdt-sales.md) · [バックアップ](wallet-backup.md)
+画面の初期言語は英語で、日本語を含む 5 言語を選択できます。`GPUChain Backup.cmd` で暗号化バックアップを作成し、復元用のパスワードを別に保管してください。メインネット台帳に記録済みのウォレットは、公開サイトで一度だけ100コインを受け取れます。USDT の新規決済は一時停止中です。[申請と既存注文の確認](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [バックアップ](wallet-backup.md)
 
 Windows では、更新後の初回起動時に参加者の既存の秘密鍵を現在のユーザーの DPAPI で保護します。別の PC への復元にはパスワードで暗号化したバックアップを使います。推論を再実行せずに保留中の支払いを確認・精算するには `node src/cli.mjs recover-settlement --wallet ウォレットファイル` を実行してください。
 

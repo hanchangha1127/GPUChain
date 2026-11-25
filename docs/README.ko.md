@@ -2,7 +2,7 @@
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md)
 
-공개 Sites에서 GPUChain 수령 주소를 등록하고 결제 지갑으로 주문에 서명한 뒤 Ethereum USDT 또는 BNB Smart Chain의 Binance-Peg USDT로 결제할 수 있습니다. 판매가는 1 USDT당 10코인(1코인당 0.1 USDT)입니다. 확정된 입금은 Sites가 확인하고 배포 지갑에서 구매자의 지갑으로 지급합니다. [구매 화면](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [결제 기준](usdt-sales.md)
+공개 사이트에 메인넷 원장에 이미 기록된 GPUChain 주소를 입력하면 지갑당 한 번 100코인을 신청할 수 있습니다. 총 지급 예산은 1억 코인으로 최대 100만 지갑분입니다. 기록이 없는 주소는 메인넷에 기록된 뒤 다시 시도하세요. Ethereum·BNB Smart Chain의 USDT 신규 결제는 일시 중지됐습니다. 이전에 입금한 주문은 기존 주문 ID로 조회할 수 있습니다. [기본 지급 및 기존 주문 조회](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
 
 GPUChain 공개 메인넷 `gpuchain-mainnet-1`은 소규모로 운영하는 추론 네트워크입니다. 기존 체인에서 서명된 승격 거래로 전환하므로 제네시스 해시, 지갑 주소, 잔액, 거래 순번을 계승합니다. `node src/cli.mjs verify`로 검증된 상태의 `networkStage`가 `mainnet`인지 확인하세요. 기존 설치본과의 호환을 위해 제네시스 파일명 `sites-testnet.json`은 유지합니다.
 

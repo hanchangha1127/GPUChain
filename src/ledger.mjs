@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { hash, sign, verify } from './crypto.mjs';
-import { decodeAmount, encodeAmount, RESERVE_NANOCOINS } from './amount.mjs';
+import { decodeAmount, encodeAmount } from './amount.mjs';
+import { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
+import { STARTER_GRANT_AMOUNT, starterAddressEligible, starterClaimHeight } from './starter-grants.mjs';
+export { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
 import { SALE_MERCHANT, SALE_TOKENS, SALE_NANO_PER_MICRO, SALE_TERMS } from './sale-policy.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
@@ -10,12 +13,6 @@ export const CONTEXT = 262_144;
 export const EPOCH_TOKENS = 1_000_000_000;
 export const NANOCOINS = 1_000_000_000;
 export const RATES = Object.freeze({input: 150, output: 470, cached: 16});
-export const DISTRIBUTION_RESERVE = Object.freeze({
-  chainId:'a05901c9ffd6ba582e9d3951c0ac84927543b48b8be8a9fb43c3c5c7d49e8460',
-  address:'95da9783a4ab7c8115ce1f4e599b2ab7f688779976d6221ea456d183429c7aae',
-  amount:RESERVE_NANOCOINS,
-  claim:'gpuchain:public-testnet:distribution-reserve:v1',
-});
 const PROTOCOL = 'gpuchain/1';
 const HEX64 = /^[0-9a-f]{64}$/;
 const RESERVE_ISSUER = '0000b0bb4901e3e6fcdc6ce7c7422bede26068d8ae9e04c5f4aa04e221a33f5e';
@@ -150,6 +147,86 @@ function pay(state, from, to, amount) {
   }
   return {...state.balances, [from]: encodeAmount(balance - n),
     [to]: encodeAmount(decodeAmount(state.balances[to] ?? 0) + n, 'recipient balance')};
+}
+
+function requireGrantNetwork(state) {
+  requireValue(state.chainId===MAINNET.chainId && state.sequencer===MAINNET.issuer &&
+    state.networkId===MAINNET.networkId && state.networkStage==='mainnet' && state.reserveClaim===DISTRIBUTION_RESERVE.claim,
+  'Starter grants require the issued public mainnet reserve');
+}
+
+function validateGrantCap(value,spent) {
+  const cap=decodeAmount(value,'starter grant cap');
+  requireValue(cap>0n && cap<=decodeAmount(DISTRIBUTION_RESERVE.amount) &&
+    cap%BigInt(STARTER_GRANT_AMOUNT)===0n && cap>=decodeAmount(spent),'Invalid lifetime starter grant cap');
+}
+
+// Retain the signed owner permission so a pruned observer can verify its lifetime budget.
+export function starterMandateEffect(state,tx) {
+  requireGrantNetwork(state);
+  const p=tx.payload,old=state.starterMandate;
+  requireValue(p.chainId===state.chainId && p.from===DISTRIBUTION_RESERVE.address,
+    'Only the distribution reserve may authorize starter grants');
+  integer(p.nonce,'starter mandate version',1);
+  requireValue(p.nonce>(old?.version ?? 0),'Starter grant mandate version must advance');
+  if (p.type==='suspend-starter-grants') {
+    requireValue(old?.active,'No active starter grant mandate');
+    return {starterMandate:{...old,active:false,version:p.nonce,suspension:structuredClone(tx)}};
+  }
+  requireValue(p.type==='authorize-starter-grants','Invalid starter grant mandate');
+  const spent=old?.spent ?? 0;
+  validateGrantCap(p.cap,spent);
+  return {starterMandate:{active:true,cap:p.cap,spent,version:p.nonce,authorization:structuredClone(tx)}};
+}
+
+export function starterGrantEffect(state,p) {
+  requireGrantNetwork(state);
+  const m=state.starterMandate;
+  requireValue(m?.active===true && p.type==='starter-grant' && p.from===MAINNET.issuer &&
+    p.chainId===state.chainId && p.mandateVersion===m.version,'Starter grant authorization missing or changed');
+  requireValue(p.amount===STARTER_GRANT_AMOUNT,'Starter grant must pay exactly 100 coins');
+  requireValue(starterAddressEligible(state,p.to),'Expected an existing eligible GPUChain wallet');
+  requireValue(starterClaimHeight(state,p.to)===null,'Wallet already received its starter grant');
+  const spent=decodeAmount(m.spent)+BigInt(STARTER_GRANT_AMOUNT);
+  requireValue(spent<=decodeAmount(m.cap),'Starter grant budget exhausted');
+  return {
+    balances:pay(state,DISTRIBUTION_RESERVE.address,p.to,STARTER_GRANT_AMOUNT),
+    starterMandate:{...m,spent:encodeAmount(spent)},
+    starterClaims:{...state.starterClaims,[p.to]:integer(state.height+1,'starter grant height',1)}
+  };
+}
+
+export function verifyStarterState(state) {
+  if (!Object.hasOwn(state,'starterMandate') && !Object.hasOwn(state,'starterClaims')) return;
+  requireGrantNetwork(state);
+  const m=state.starterMandate;
+  fields(m,['version','active','spent','cap','authorization',...(m?.active===false?['suspension']:[])]);
+  requireValue(typeof m.active==='boolean','Invalid starter mandate status');
+  validateGrantCap(m.cap,m.spent);
+  function verifyPermission(tx,type,extra) {
+    fields(tx,['payload','signature']);
+    const p=tx.payload;
+    fields(p,['type','from','chainId','nonce',...extra]);
+    requireValue(p.type===type && p.from===DISTRIBUTION_RESERVE.address && p.chainId===state.chainId &&
+      integer(p.nonce,'starter permission nonce',1)<=(state.nonces[p.from] ?? 0),'Invalid starter permission');
+    signature(p.from,p,tx.signature,'starter permission');
+    return p;
+  }
+  const authorization=verifyPermission(m.authorization,'authorize-starter-grants',['cap']);
+  const latest=m.active?authorization:verifyPermission(m.suspension,'suspend-starter-grants',[]);
+  requireValue(m.cap===authorization.cap && m.version===latest.nonce &&
+    (m.active || latest.nonce>authorization.nonce),'Starter mandate differs from reserve permission');
+  const claims=Object.hasOwn(state,'starterClaims') ? state.starterClaims : {};
+  requireValue(record(claims),'Invalid starter claim registry');
+  const heights=new Set();
+  for (const [address,height] of Object.entries(claims)) {
+    requireValue(starterAddressEligible(state,address) && Number.isSafeInteger(height) &&
+      height>state.mainnetPromotion.payload.anchorHeight && height<=state.height &&
+      !heights.has(height),'Invalid starter claim record');
+    heights.add(height);
+  }
+  requireValue(BigInt(heights.size)*BigInt(STARTER_GRANT_AMOUNT)===decodeAmount(m.spent),
+    'Starter claim count differs from lifetime spend');
 }
 
 /** Compute the fixed reserve effect. The enclosing transition checks the signed nonce and sender. */
@@ -326,6 +403,9 @@ const EXTRA = Object.freeze({
     'mandateVersion','orderId','payTo','token'],
   'authorize-sales':['authority','cap','terms'],
   'suspend-sales':[],
+  'authorize-starter-grants':['cap'],
+  'suspend-starter-grants':[],
+  'starter-grant':['to','amount','mandateVersion'],
   'hold-sale':['orderId','to','amount','evmChainId','mandateVersion'],
   'release-sale':['orderId','commitment','mandateVersion'],
   'add-provider': ['provider'],
@@ -368,6 +448,10 @@ function transition(state, tx, quorum=false) {
     if (!Object.keys(next.saleHolds).length) delete next.saleHolds;
   } else if (p.type === 'authorize-sales' || p.type === 'suspend-sales') {
     Object.assign(next,saleMandateEffect(state,p));
+  } else if (p.type==='authorize-starter-grants' || p.type==='suspend-starter-grants') {
+    Object.assign(next,starterMandateEffect(state,tx));
+  } else if (p.type==='starter-grant') {
+    Object.assign(next,starterGrantEffect(state,p));
   } else if (p.type === 'add-validator') {
     requireValue(p.from === state.sequencer, 'Only the sequencer can authorize a validator');
     hex64(p.validator, 'validator address');

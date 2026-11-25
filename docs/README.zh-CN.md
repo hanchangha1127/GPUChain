@@ -10,7 +10,7 @@ GPUChain 公开主网 `gpuchain-mainnet-1` 目前以小规模试点方式运行�
 
 **打开钱包界面**：运行 `npm run gui`，或在 Windows 上双击 **GPUChain Wallet.cmd**。程序会启动节点或使用已运行的节点，再打开浏览器。本机界面显示钱包的公开地址和已验证余额、节点的同步和投票状态，以及本机推理服务适配器的状态。界面使用单独的本机回环端口。运行 `node scripts/open-wallet.mjs --print-url` 可查看实际地址。 如需转账，请打开 `GPUChain Unlock.cmd` 或运行 `npm run wallet:unlock` 获取一次性代码，在本机输入并核对收款地址和金额后确认。
 
-界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。公开商店的售价为 1 USDT 购买 10 枚代币。付款前先登记 GPUChain 收款地址。[购买说明](usdt-sales.md) · [备份与恢复](wallet-backup.md)
+界面默认为英语，支持简体中文等五种语言。用 `GPUChain Backup.cmd` 创建加密备份，另行保管恢复密码。主网账本中已有记录的钱包可在公开网站领取一次 100 枚代币。新的 USDT 支付已暂时停用。[领取和旧订单查询](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/) · [备份与恢复](wallet-backup.md)
 
 Windows 节点在升级后首次启动时，会使用当前用户的 DPAPI 保护现有参与者私钥。在其他电脑上恢复钱包需要密码加密的备份。要单独核对或完成待结算的支付，可运行 `node src/cli.mjs recover-settlement --wallet 钱包文件路径`，无需重新生成回答。
 

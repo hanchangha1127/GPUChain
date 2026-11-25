@@ -37,6 +37,8 @@ const usage = `GPUChain
   promote-mainnet --wallet SEQUENCER_KEY [--ledger URL]
   authorize-sales --wallet RESERVE_KEY --authority SALE_ADDRESS --coins LIFETIME_CAP [--ledger URL]
   suspend-sales --wallet RESERVE_KEY [--ledger URL]
+  authorize-starter-grants --wallet RESERVE_KEY --coins LIFETIME_CAP [--ledger URL]
+  suspend-starter-grants --wallet RESERVE_KEY [--ledger URL]
   routes   [--genesis FILE] [--ledger URL] [--max-output N] [--wallet KEY] [--transport auto|direct|relay]
   chat     [--genesis FILE] --wallet KEY [--provider-url URL --provider-address ADDRESS]
            (--text PROMPT | --text-file FILE) [--max-input N] [--max-output N] [--ledger URL]
@@ -53,6 +55,8 @@ Custom genesis files default to http://127.0.0.1:8787. Strata defaults to http:/
 const flags = {
   'authorize-sales':['wallet','authority','coins','ledger','genesis'],
   'suspend-sales':['wallet','ledger','genesis'],
+  'authorize-starter-grants':['wallet','coins','ledger','genesis'],
+  'suspend-starter-grants':['wallet','ledger','genesis'],
   wallet: ['out'],
   genesis: ['wallet','out','allocation','provider','max-output'],
   node: ['genesis','wallet','dir','listen','port'],
@@ -306,6 +310,11 @@ async function writeCommand(command,v,wallet,ledger,resolveLedger,directory,gene
       throw Error('The official reserve wallet is required to change the sale mandate');
     }
     details=command==='authorize-sales' ? {authority:address(required(v,'authority')),cap:parseCoins(required(v,'coins')),terms:SALE_TERMS} : {};
+  } else if (command==='authorize-starter-grants' || command==='suspend-starter-grants') {
+    if (state.chainId!==MAINNET.chainId || state.networkStage!=='mainnet' || wallet.address!==DISTRIBUTION_RESERVE.address) {
+      throw Error('The public mainnet reserve wallet is required to change the starter grant budget');
+    }
+    details=command==='authorize-starter-grants' ? {cap:parseCoins(required(v,'coins'))} : {};
   } else if (command === 'issue-reserve') {
     if (wallet.address !== genesis.payload.sequencer) throw Error('The genesis sequencer wallet must authorize reserve issuance');
     if (state.reserveClaim) throw Error('Public testnet reserve already issued');

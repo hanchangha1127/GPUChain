@@ -20,6 +20,18 @@ export function verifyAdvance(prior,next) {
   if (prior.authority && (!next.authority || hash(next.authority) !== hash(prior.authority))) {
     throw Error('Consensus authority downgrade or conflict');
   }
+  if (old.starterMandate) {
+    if (!state.starterMandate || state.starterMandate.version<old.starterMandate.version ||
+      Object.entries(old.starterClaims ?? {}).some(([address,height])=>state.starterClaims?.[address]!==height) ||
+      Object.entries(state.starterClaims ?? {}).some(([address,height])=>
+        height<=old.height && old.starterClaims?.[address]!==height)) {
+      throw Error('Starter mandate or claim history rollback');
+    }
+    if (state.starterMandate.version===old.starterMandate.version &&
+      (state.starterMandate.active!==old.starterMandate.active || state.starterMandate.cap!==old.starterMandate.cap)) {
+      throw Error('Conflicting starter grant permission');
+    }
+  }
   if (old.mainnetPromotion) {
     if (!state.mainnetPromotion || hash(state.mainnetPromotion)!==hash(old.mainnetPromotion)) {
       throw Error('Mainnet promotion downgrade or conflict');

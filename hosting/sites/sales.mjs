@@ -61,13 +61,14 @@ async function scannerStatus(env,db,now) {
   return {lastTickAt,online:typeof env.USDT_SWEEP_TOKEN==='string' && env.USDT_SWEEP_TOKEN.length>=32 &&
     Number.isSafeInteger(lastTickAt) && lastTickAt<=now && lastTickAt>now-SCANNER_TTL};
 }
-function publicOrder(row) {
+function publicOrder(row,acceptNewOrders) {
   const net=usdt.NETWORKS[row.chain_id];
+  const showPayment=acceptNewOrders && row.state!=='holding';
   return {id:row.id,orderId:row.id,status:row.review && !['paid','delivered'].includes(row.state)?'review':row.state,
     chainId:row.chain_id,payer:row.payer,gpuAddress:row.recipient,amountMicro:row.micro,
     amountNano:(BigInt(row.micro)*SALE_NANO_PER_MICRO).toString(),coinsPerUsdt:SALE_COINS_PER_USDT,
-    payTo:row.state==='holding'?null:usdt.MERCHANT,token:row.state==='holding'?null:net.token,
-    usdtUnits:row.state==='holding'?null:(BigInt(row.micro)*10n**BigInt(net.decimals-6)).toString(),
+    payTo:showPayment?usdt.MERCHANT:null,token:showPayment?net.token:null,
+    usdtUnits:showPayment?(BigInt(row.micro)*10n**BigInt(net.decimals-6)).toString():null,
     createdAt:row.created_ms,expiresAt:row.expires_ms,startBlock:row.start_block,txHash:row.tx_hash,
     ledgerTip:row.ledger_tip,ledgerHeight:row.ledger_height,reviewReason:row.review,latePaymentHash:row.late_hash};
 }
@@ -142,7 +143,7 @@ async function deliver(env,db,row,settle) {
     .bind(result.sequence,result.height,result.tip,paymentShortfall,row.id,row.event_id).run();
 }
 
-export function createSalesRoute({verifyQuote=usdt.verifyQuoteSignature,health=usdt.checkRpcHealth,
+export function createSalesRoute({acceptNewOrders=false,verifyQuote=usdt.verifyQuoteSignature,health=usdt.checkRpcHealth,
   checkPayment=usdt.checkPayment,findPayment=usdt.findQuotePayment,inventory=settlement.readSaleInventory,
   settle=settlement.settleOrder,acquireHold=settlement.ensureSaleHold,releaseHold=settlement.releaseSaleHold}={}) {
   // Only readiness metadata is cached. A quote always performs fresh network checks.
@@ -220,6 +221,16 @@ export function createSalesRoute({verifyQuote=usdt.verifyQuoteSignature,health=u
     const headers=request.headers;
     const origin=headers.get('origin');
     demand(!origin || origin===new URL(request.url).origin,403,'Unexpected origin');
+    if (!acceptNewOrders) {
+      if (request.method==='POST' && path==='/v1/sales/quote') {
+        return response({code:'sales_paused',error:'USDT payments are temporarily disabled. Please do not send USDT.'},503);
+      }
+      if (request.method==='GET' && path==='/v1/sales/status') {
+        const paused={accepting:false,paymentReady:false,reason:'sales-paused'};
+        return response({accepting:false,paused:true,intakeMode:'paused',reason:'sales-paused',
+          merchant:null,networks:{1:paused,56:paused}});
+      }
+    }
     const db=env.DB.withSession('first-primary');
     const {now}=await db.prepare("SELECT CAST(strftime('%s','now') AS INTEGER)*1000 AS now").first();
     if (request.method === 'POST' && path === '/v1/sales/diagnostics') {
@@ -289,7 +300,7 @@ export function createSalesRoute({verifyQuote=usdt.verifyQuoteSignature,health=u
       if (saved) {
         const old=JSON.parse(saved.intent);
         demand(old.gpuAddress===q.gpuAddress && old.amountMicro===q.amountMicro && old.issuedAt===q.issuedAt,409,'Request ID already used');
-        return response(publicOrder(saved));
+        return response(publicOrder(saved,acceptNewOrders));
       }
       demand(Number.isSafeInteger(q.issuedAt) && q.issuedAt>=now-120000 && q.issuedAt<=now+10000,400,'Quote signature expired');
       demand((await scannerStatus(env,db,now)).online,503,'Automatic payment monitor unavailable');
@@ -322,9 +333,9 @@ export function createSalesRoute({verifyQuote=usdt.verifyQuoteSignature,health=u
       demand(out.recipient===q.gpuAddress && out.micro===q.amountMicro && JSON.parse(out.intent).issuedAt===q.issuedAt,409,'Request ID already used');
       if (out.state==='holding') {
         try {await processRow(env,db,out,now);} catch { /* Paid checkout waits for certified collateral. */ }
-        return response(publicOrder(await getOrder(db,id)),inserted.meta.changes?201:200);
+        return response(publicOrder(await getOrder(db,id),acceptNewOrders),inserted.meta.changes?201:200);
       }
-      return response(publicOrder(out),inserted.meta.changes?201:200);
+      return response(publicOrder(out,acceptNewOrders),inserted.meta.changes?201:200);
     }
     const lookup=path.match(/^\/v1\/sales\/orders\/([0-9a-f]{64})$/);
     if ((request.method==='GET' && lookup) || (request.method==='POST' && path==='/v1/sales/claim')) {
@@ -338,7 +349,7 @@ export function createSalesRoute({verifyQuote=usdt.verifyQuoteSignature,health=u
         if (hint && (err.status===400 || err.status===409)) throw err;
         pending=true;
       }
-      return response({...publicOrder(await getOrder(db,id)),verificationPending:pending});
+      return response({...publicOrder(await getOrder(db,id),acceptNewOrders),verificationPending:pending});
     }
     if (request.method==='POST' && path==='/v1/sales/tick') {
       const secret=env.USDT_SWEEP_TOKEN;

@@ -6,6 +6,10 @@ import { OUTCOME_SLOTS } from '../../src/transaction-outcome.mjs';
 // ledger_head also holds singleton operational rows (1–4). This disjoint
 // bounded range contains compact proofs tied to the same atomic head write.
 export const OUTCOME_ROW_BASE=10000;
+export const HOSTED_HEAD_BYTES=1_900_000;
+// New awards yield capacity to paid deliveries (up to 256 open orders) and
+// the three-validator activation certificate, including its public origins.
+export const GRANT_HEAD_BYTES=HOSTED_HEAD_BYTES-64*1024;
 
 export const openOrders = "state IN ('holding','reserved','paid','releasing')";
 const clockMs = "(CAST(strftime('%s','now') AS INTEGER)*1000)";
@@ -53,6 +57,9 @@ export function writerBudgetGuard(state,next,type) {
 }
 
 export async function commitHostedTransaction(db,prior,next,encoded,type,proof) {
+  if(type==='starter-grant' && new TextEncoder().encode(encoded).byteLength>GRANT_HEAD_BYTES) {
+    throw Object.assign(Error('Hosted starter grants paused to preserve payment and handoff capacity'),{status:507});
+  }
   const guard=writerBudgetGuard(prior,next,type);
   const update=db.prepare('UPDATE ledger_head SET tip=?,checkpoint=? WHERE id=1 AND tip=?'+(guard?.sql ?? ''))
     .bind(next.tip,encoded,prior.tip,...(guard?.args ?? []));
