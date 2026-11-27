@@ -4,6 +4,7 @@ import http, { createServer } from 'node:http';
 import { once } from 'node:events';
 import { generateWallet } from '../src/crypto.mjs';
 import { createGenesis, replay, MODEL, CONTEXT } from '../src/ledger.mjs';
+import { DISTRIBUTION_RESERVE } from '../src/reserve-policy.mjs';
 import { startWalletUi } from '../src/wallet-ui.mjs';
 
 function fixture() {
@@ -152,4 +153,106 @@ test('local provider activity remains unknown for older, incompatible and unread
       assert.equal(inference.providerRegistered,false);
     }
   }
+});
+
+test('the local wallet shares one read-only route diagnosis and hides internal probe errors',async t=>{
+  const diagnostic={code:'no_encrypted_provider',registered:1,eligible:1,relaysChecked:1,relaysReached:1};
+  const path='/api/inference-routes';
+  for (const failing of [false,true]) {
+    let checks=0;
+    const ui=await startWalletUi({port:0,getSnapshot:()=>{throw Error('Unexpected checkpoint read');},
+      diagnoseRoutes:async()=>{
+        checks++;
+        if (failing) throw Error('sensitive upstream details');
+        return diagnostic;
+      }});
+    t.after(ui.close);
+    for (const headers of [{origin:'https://foreign.example'},{'sec-fetch-site':'cross-site'}]) {
+      assert.equal((await read(ui.url,{path,headers})).status,403);
+    }
+    assert.equal((await read(ui.url,{path,method:'POST'})).status,405);
+    assert.equal(checks,0);
+    const responses=await Promise.all([read(ui.url,{path}),read(ui.url,{path})]);
+    for (const res of responses) {
+      assert.equal(res.status,200);
+      assert.deepEqual(JSON.parse(res.body),failing?{code:'ledger_unavailable'}:diagnostic);
+      assert.equal(res.headers['cache-control'],'no-store');
+    }
+    assert.equal(checks,1);
+  }
+});
+
+test('the wallet reports local engine status and the mainnet record belonging to the displayed address',async t=>{
+  const data=fixture(),address=data.owner.address;
+  const providerUrl=await fakeProvider(t,(_req,res)=>{res.writeHead(503);res.end('{}');});
+  const snapshot=()=>({status:{...data.status,chainId:state.chainId,address:displayed},checkpoint:{...data.checkpoint,state}});
+  let state={...data.checkpoint.state,networkStage:'mainnet'},displayed=address,engine='model_unloaded';
+  const ui=await startWalletUi({port:0,providerUrl,getSnapshot:snapshot,localEngineStatus:()=>engine});t.after(ui.close);
+  const result=async()=>{
+    const res=await read(ui.url);
+    assert.equal(res.status,200);
+    return JSON.parse(res.body);
+  };
+  assert.equal((await result()).starterRecord,null);
+  state={...state,chainId:DISTRIBUTION_RESERVE.chainId,networkStage:'testnet'};
+  assert.equal((await result()).starterRecord,null);
+  state.networkStage='mainnet';
+  assert.equal((await result()).starterRecord,'recorded');
+  state.balances={};
+  assert.equal((await result()).starterRecord,'unrecorded');
+  state.nonces={[address]:1};
+  const recorded=await result();
+  assert.equal(recorded.starterRecord,'recorded');
+  assert.equal(recorded.inference.engineStatus,'model_unloaded');
+  assert.equal(recorded.inference.inferenceActive,null);
+  for (const claimSet of ['starterClaims','starterClaimsV2']) {
+    state[claimSet]={[address]:7};
+    assert.equal((await result()).starterRecord,'claimed');
+    delete state[claimSet];
+  }
+  displayed=DISTRIBUTION_RESERVE.address;
+  engine='external_adapter';
+  const reserve=await result();
+  assert.equal(reserve.starterRecord,'ineligible');
+  assert.equal(reserve.inference.engineStatus,'external_adapter');
+});
+
+test('payment review exposes only the local outcome and never calls a send method',async t=>{
+  const snapshot=fixture(),digest='b'.repeat(64);
+  const review={type:'transfer',nonce:3,txHash:digest};
+  const lastTransfer={...review,to:snapshot.provider.address,coins:'1',status:'unconfirmed'};
+  const providerUrl=await fakeProvider(t,(_req,res)=>{res.writeHead(503);res.end('{}');});
+  let lookups=0,outcome;
+  const ui=await startWalletUi({port:0,providerUrl,getSnapshot:()=>snapshot,sender:{
+    paymentStatus:()=>({lastTransfer,reviews:[review]}),
+    checkOutcome:async txHash=>{
+      lookups++;
+      assert.equal(txHash,digest);
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    },
+    confirm:()=>assert.fail('Review must never send'),
+  }});
+  t.after(ui.close);
+  const wallet=JSON.parse((await read(ui.url)).body).wallet;
+  assert.deepEqual(wallet.lastTransfer,lastTransfer);
+  assert.deepEqual(wallet.unconfirmedPayments,[review]);
+  const path='/api/payment-outcome/'+digest;
+  for (const headers of [{origin:'https://foreign.example'},{'sec-fetch-site':'cross-site'}]) {
+    assert.equal((await read(ui.url,{path,headers})).status,403);
+  }
+  assert.equal((await read(ui.url,{path,method:'POST'})).status,405);
+  assert.equal((await read(ui.url,{path:path.slice(0,-1)})).status,404);
+  assert.equal(lookups,0);
+  for (const [errorCode,expected] of [
+    ['settlement_unconfirmed','unconfirmed'],['settlement_pending','pending'],['WALLET_BUSY','busy'],
+  ]) {
+    outcome=Object.assign(Error('upstream details'),{code:errorCode});
+    assert.deepEqual(JSON.parse((await read(ui.url,{path})).body),{status:expected});
+  }
+  outcome=null;
+  assert.deepEqual(JSON.parse((await read(ui.url,{path})).body),{status:'unavailable'});
+  outcome={height:4,internal:'upstream details'};
+  assert.deepEqual(JSON.parse((await read(ui.url,{path})).body),{status:'confirmed',height:4});
+  assert.equal(lookups,5);
 });

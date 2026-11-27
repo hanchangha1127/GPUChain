@@ -3,6 +3,23 @@ import { applyBlock, createBlock } from './ledger.mjs';
 import { authenticateLegacy, checkpointProof, updatedEpochHashes } from './checkpoint-base.mjs';
 import { verifyConsensusCheckpoint } from './consensus.mjs';
 
+// Weak because JSON key order and wire compression can vary. The digest
+// commits to the complete semantic envelope, including the committee and votes.
+export function checkpointETag(head) {
+  return 'W/"gpuchain-' + hash(head) + '"';
+}
+
+export function checkpointHttp(head,condition) {
+  const etag=checkpointETag(head);
+  const headers={'content-type':'application/json','cache-control':'private, no-cache',
+    'x-content-type-options':'nosniff',etag};
+  const match=typeof condition==='string' && condition.split(',').some(value=>{
+    const tag=value.trim();
+    return tag==='*' || tag===etag || tag===etag.slice(2);
+  });
+  return {status:match?304:200,headers,body:match?null:JSON.stringify(head)};
+}
+
 export function authenticate(checkpoint, chainId) {
   if (Object.hasOwn(checkpoint,'authority') || Object.hasOwn(checkpoint,'consensus')) {
     return verifyConsensusCheckpoint(checkpoint,chainId);

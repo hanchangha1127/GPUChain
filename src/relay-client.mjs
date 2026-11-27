@@ -180,17 +180,20 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
   pollMs=5000,presenceMs=25_000,inferenceTimeoutMs=3_610_000}) {
   const adapter=normalizeProviderEndpoint(adapterUrl);
   need(new URL(adapter).hostname==='127.0.0.1' || new URL(adapter).hostname==='[::1]','Expected numeric loopback adapter');
-  const relay=base(relayUrl), pair=makeRelayKeyPair(), controller=new AbortController(), signal=controller.signal;
+  const relay=base(relayUrl), pair=makeRelayKeyPair(), wake=new AbortController();
   const completed=new Map();
   let state='starting',lastContactAt=null,error=null,lastOffer,nextPresence=0,pending,closing;
-  const options=(timeoutMs,maxBytes)=>({timeoutMs,maxBytes,signal});
+  let draining=false, lastIssued=0, lastLeaseEnd=0, unconfirmed=false;
+  const options=(timeoutMs,maxBytes)=>({timeoutMs,maxBytes});
   async function post(op,body,maxBytes=16_384) {
     const result=await requestJson(relay+'/'+op,{body,...options(12_000,maxBytes)});
     lastContactAt=new Date().toISOString();
     return result;
   }
   function presence(profile,available) {
-    const now=Date.now();
+    // A withdrawal must supersede an online request even if both were signed
+    // in the same millisecond and their HTTP requests arrive out of order.
+    const now=lastIssued=Math.max(Date.now(),lastIssued+1);
     const p={domain:domain('presence'),chainId,provider:wallet.address,publicKey:pair.publicKey,
       model:MODEL,contextWindow:CONTEXT,kvCache:profile.kvCache,maxOutputTokens:profile.maxOutputTokens,
       available,issuedAt:now,expiresAt:now+60_000};
@@ -246,10 +249,10 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
             let ack;
             try { ack=await post('frame',msg,MAX_FRAME_BOX+4096); }
             catch (err) {
-              if (signal.aborted || !transient(err) || performance.now()>=due) {
+              if (!transient(err) || performance.now()>=due) {
                 throw Error('Could not deliver the relay frame',{cause:err});
               }
-              await delay(pause,undefined,{signal});
+              await delay(pause);
               continue;
             }
             need(ack.index===index,'Wrong relay frame acknowledgement');
@@ -266,7 +269,6 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
       if (writer) out.frameCount=await writer.finish();
     } catch (err) {
       if (writer) await writer.stop();
-      if (signal.aborted) throw err;
       // A dropped adapter connection, frame upload or malformed final receipt
       // can leave the outcome uncertain. Preserve nonce protection for it.
       definitiveFailure=!dispatched || err.adapterRejected===true || (!!err.status && err.status!==409);
@@ -280,66 +282,112 @@ export function startProviderRelay({wallet,chainId,relayUrl,adapterUrl,readState
     }
     pending={jobId:p.jobId,box,expiresAt:p.expiresAt,failed:definitiveFailure && failureReceipt===1};
   }
-  async function cycle() {
-    if (pending) {
-      const p={domain:domain('complete'),chainId,provider:wallet.address,jobId:pending.jobId,
-        boxHash:hash(pending.box),issuedAt:Date.now(),salt:salt(),...(pending.failed ? {outcome:'failed'} : {})};
-      try { await post('complete',{...envelope(wallet,p),box:pending.box},MAX_WIRE); }
-      catch (err) {
-        if (transient(err) || signal.aborted) throw err;
-        if (![404,410].includes(err.status)) throw err;
-      }
-      completed.set(pending.jobId,pending.expiresAt);
-      pending=undefined;
-      nextPresence=0;
+  async function completePending() {
+    if (!pending) return;
+    const p={domain:domain('complete'),chainId,provider:wallet.address,jobId:pending.jobId,
+      boxHash:hash(pending.box),issuedAt:Date.now(),salt:salt(),...(pending.failed ? {outcome:'failed'} : {})};
+    try {
+      const ack=await post('complete',{...envelope(wallet,p),box:pending.box},MAX_WIRE);
+      need(ack.jobId===pending.jobId && ack.status==='done','Unexpected relay completion acknowledgement');
+    } catch (err) {
+      if (![404,410].includes(err.status)) throw err;
+      if (draining) unconfirmed=true;
     }
+    completed.set(pending.jobId,pending.expiresAt);
+    pending=undefined;
+    nextPresence=0;
+  }
+  async function pollJob() {
+    const {job,failureReceipt}=await post('poll',signedNow(wallet,'poll',{chainId,provider:wallet.address}),MAX_WIRE);
+    if (!job) return false;
+    state='busy';
+    await processJob(job,failureReceipt);
+    return true;
+  }
+  async function cycle() {
+    await completePending();
+    if (draining) return;
     const now=Date.now();
     for (const [id,expires] of completed) if (expires<=now) completed.delete(id);
     if (now>=nextPresence) {
       let profile;
       try { profile=await probe(); }
       catch (err) {
-        if (lastOffer && !signal.aborted) {
+        if (lastOffer && !draining && state!=='offline') {
           try { await post('presence',presence(lastOffer,false)); } catch { /* Prior offer expires. */ }
-          lastOffer=undefined;
         }
         state='offline';
         throw err;
       }
-      await post('presence',presence(profile,true));
+      if (draining) return;
+      const online=presence(profile,true);
+      // A lost acknowledgement can still mean that the mailbox accepted jobs.
       lastOffer=profile;
+      lastLeaseEnd=online.payload.expiresAt;
+      await post('presence',online);
       nextPresence=Date.now()+presenceMs;
     }
+    if (draining) return;
     state='ready';error=null;
-    const {job,failureReceipt}=await post('poll',signedNow(wallet,'poll',{chainId,provider:wallet.address}),MAX_WIRE);
-    if (!job) return;
-    state='busy';
-    await processJob(job,failureReceipt);
+    await pollJob();
   }
   const pumping=(async()=>{
-    while (!signal.aborted) {
+    while (!draining) {
       try { await cycle(); }
       catch (err) {
-        if (signal.aborted) break;
+        if (draining) break;
         if (state!=='offline') state='error';
         error=err.status ? 'Relay or local adapter returned HTTP '+err.status : 'Relay connection or authentication failed';
-        try { await delay(pollMs,undefined,{signal}); } catch { break; }
+        try { await delay(pollMs,undefined,{signal:wake.signal}); } catch { break; }
         continue;
       }
       if (pending) continue;
-      try { await delay(pollMs,undefined,{signal}); } catch { break; }
+      try { await delay(pollMs,undefined,{signal:wake.signal}); } catch { break; }
     }
   })();
-  return {status:()=>({state,lastContactAt,error}),close() {
-    if (!closing) closing=(async()=>{
-      controller.abort();
-      await pumping;
-      if (lastOffer) {
-        try { await requestJson(relay+'/presence',{body:presence(lastOffer,false),timeoutMs:2000,maxBytes:4096}); }
-        catch { /* Offline announcement is best effort; live lease is bounded. */ }
+  async function withdraw() {
+    // A retired bootstrap can reject presence updates. Its last signed lease
+    // still fences admissions after expiry; allow a margin for clock skew.
+    while (lastOffer && Date.now()<lastLeaseEnd+10_000) {
+      try {
+        const ack=await post('presence',presence(lastOffer,false));
+        if (ack.ok===true) return;
+      } catch { /* Retry without interrupting the active inference. */ }
+      await delay(Math.min(pollMs,1000));
+    }
+  }
+  async function drain() {
+    draining=true;
+    wake.abort(); // Wake idle polling only. Adapter calls and uploads keep their own deadlines.
+    let fenced=false;
+    const withdrawal=withdraw().then(()=>{fenced=true;});
+    await pumping;
+    if (lastOffer) {
+      // A job can be accepted until lease expiry and its signed authorization
+      // is valid for at most ten more minutes. If we already have its result,
+      // give the relay its full 61 minute running and 5 minute ACK lifetimes.
+      const lastPossibleStart=lastLeaseEnd+11*60_000;
+      for (;;) {
+        try {
+          await completePending();
+          const afterFence=fenced;
+          if (!await pollJob() && afterFence) break;
+          if (pending) continue;
+        } catch {
+          error='Waiting for relay drain acknowledgement';
+        }
+        const until=lastPossibleStart+(pending?66*60_000:0);
+        if (Date.now()>=until) { unconfirmed=true; break; }
+        await delay(Math.min(pollMs,1000));
       }
-      state='stopped';error=null;
-    })();
+    }
+    await withdrawal;
+    state='stopped';
+    error=unconfirmed?'Could not confirm relay drain':null;
+    return {confirmed:!unconfirmed};
+  }
+  return {status:()=>({state:draining && state!=='stopped'?'draining':state,lastContactAt,error}),close() {
+    closing??=drain();
     return closing;
   }};
 }

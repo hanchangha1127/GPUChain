@@ -12,6 +12,8 @@ const phrases = {
   'Amount (coins)':['수량 (코인)','金額（コイン）','数量（币）','Montant (coins)'],
   'Review transfer':['송금 내용 확인','送金内容を確認','核对转账','Vérifier le virement'],
   'Confirm transfer':['송금 확정','送金を確定','确认发送','Confirmer le virement'],
+  'An earlier transfer of this amount to this recipient is unconfirmed.':['같은 수취인에게 같은 금액을 보낸 이전 송금의 결과가 확인되지 않았습니다.','同じ受取先への同額の送金が未確認です。','此前向该地址转出的同额款项尚未确认。','Un virement précédent de ce montant au même destinataire reste sans confirmation.'],
+  'I authorize a separate payment.':['별도의 추가 송금을 승인합니다.','別の支払いを承認します。','我授权再发送一笔独立付款。','J’autorise un paiement supplémentaire.'],
   'From':['보내는 지갑','送金元','发送地址','Expéditeur'],
   'Network fee (coins)':['네트워크 수수료 (코인)','手数料（コイン）','网络费（币）','Frais de réseau (coins)'],
   'Transaction nonce':['거래 순번','取引番号 (nonce)','交易序号','Numéro de séquence'],
@@ -23,7 +25,9 @@ const phrases = {
   'Close':['닫기','閉じる','关闭','Fermer'],
   'Checking…':['확인 중…','確認中…','核对中…','Vérification…'],
   'A wallet operation is pending. Try again once it settles.':['지갑 거래가 진행 중입니다. 정산 후 다시 시도하세요.','ウォレットの処理中です。精算後に再試行してください。','钱包操作正在进行，请在结算后重试。','Une opération est en cours. Réessayez après son règlement.'],
-  'Resolve the previous inference payment before sending coins.':['이전 추론 결제의 결과를 확인한 뒤 송금하세요.','前回の推論の支払い状況を確認してから送金してください。','请先核对上一笔推理支付，再转账。','Vérifiez le règlement de la dernière inférence avant le virement.'],
+  'A signed payment is awaiting confirmation. Run recover-settlement to resume it.':['서명된 결제가 확정 대기 중입니다. recover-settlement로 정산을 재개하세요.','署名済みの支払いは確定待ちです。recover-settlement で再開できます。','已签名的支付正在等待确认。请运行 recover-settlement 继续结算。','Un paiement signé attend confirmation. Exécutez recover-settlement pour reprendre le règlement.'],
+  'The ledger rejected this signed payment.':['원장이 서명된 결제를 거부했습니다.','台帳が署名済みの支払いを拒否しました。','账本拒绝了这笔已签名的支付。','Le registre a rejeté ce paiement signé.'],
+  'The previous transfer was confirmed. Review the latest transfer before sending again.':['이전 송금이 확정됐습니다. 다시 보내기 전에 최근 송금을 확인하세요.','前の送金が確定しました。次の送金前に最近の送金を確認してください。','上一笔转账已确认。再次转账前，请核对最近转账。','Le virement précédent est confirmé. Consultez le dernier virement avant de renvoyer des coins.'],
   'Waiting for ledger confirmation…':['원장 확정을 기다리는 중…','台帳の確定を待っています…','等待账本确认…','Confirmation du registre en cours…'],
   'Transfer confirmed':['송금 확정됨','送金が確定しました','转账已确认','Virement confirmé'],
   'Transaction hash':['거래 해시','取引ハッシュ','交易哈希','Empreinte de transaction'],
@@ -36,22 +40,23 @@ const phrases = {
   'The ledger changed or this draft expired. Review a new draft.':['원장이 변경됐거나 요청이 만료됐습니다. 새 송금 내용을 확인하세요.','台帳が更新されたか、期限が切れました。新しい送金内容を確認してください。','账本已更新或草稿已过期，请重新核对。','Le registre a changé ou le brouillon a expiré. Vérifiez un nouveau brouillon.'],
   'Too many attempts. Try later.':['시도 횟수가 많습니다. 잠시 후 다시 시도하세요.','試行回数が多すぎます。時間をおいてください。','尝试次数过多，请稍后再试。','Trop de tentatives. Réessayez plus tard.'],
   'The ledger is unavailable.':['현재 원장에 연결할 수 없습니다.','現在、台帳に接続できません。','账本暂时不可用。','Le registre est indisponible.'],
-  'Transfer outcome is unknown. Check the wallet balance and nonce before another transfer.':['송금 결과를 확인할 수 없습니다. 다시 보내기 전에 지갑 잔액과 거래 순번을 확인하세요.','送金結果を確認できません。次の送金前に残高と取引番号を確認してください。','转账结果未知。再次转账前，请查看余额和交易序号。','Résultat incertain. Vérifiez le solde et le numéro de séquence avant tout autre virement.'],
+  'Open wallet and connection details to check the signed payment outcome before sending again.':['다시 보내기 전에 지갑 및 연결 세부 정보에서 서명된 결제 결과를 확인하세요.','次の送金前にウォレットと接続の詳細で署名済みの支払い結果を確認してください。','再次转账前，请在钱包与连接详情中核对已签名的支付结果。','Avant un nouvel envoi, vérifiez le paiement signé dans les détails du portefeuille et de la connexion.'],
   'Could not complete this request.':['요청을 완료하지 못했습니다.','要求を完了できませんでした。','未能完成请求。','La demande a échoué.']
 };
 const tr=label=>phrases[label]?.[languages.indexOf(document.documentElement.lang)] ?? label;
 const translations={
   WALLET_BUSY:'A wallet operation is pending. Try again once it settles.',
-  settlement_pending:'Resolve the previous inference payment before sending coins.',
-  settlement_unconfirmed:'Resolve the previous inference payment before sending coins.',
-  settlement_rejected:'Resolve the previous inference payment before sending coins.',
+  settlement_pending:'A signed payment is awaiting confirmation. Run recover-settlement to resume it.',
+  settlement_unconfirmed:'Open wallet and connection details to check the signed payment outcome before sending again.',
+  settlement_rejected:'The ledger rejected this signed payment.',
+  previous_transfer_recovered:'The previous transfer was confirmed. Review the latest transfer before sending again.',
   INVALID_CODE:'The code is invalid or has expired.', AUTH_REQUIRED:'Unlock the wallet again.',
   RATE_LIMITED:'Too many attempts. Try later.', INSUFFICIENT_FUNDS:'Insufficient verified balance.',
   INVALID_INPUT:'Enter a valid 64-character recipient and a positive amount with up to nine decimal places.',
   STATE_CHANGED:'The ledger changed or this draft expired. Review a new draft.',
   EXPIRED:'The ledger changed or this draft expired. Review a new draft.', LEDGER_UNAVAILABLE:'The ledger is unavailable.'
 };
-const terminalFailure='Transfer outcome is unknown. Check the wallet balance and nonce before another transfer.';
+const terminalFailure=translations.settlement_unconfirmed;
 const fixedLabels={
   amount:'Amount (coins)',destination:'Recipient address',sender:'From',fee:'Network fee (coins)',
   nonce:'Transaction nonce',chain:'Chain ID',deadline:'Confirm before',height:'Ledger height',receipt:'Transaction hash'
@@ -75,6 +80,8 @@ dialog.innerHTML=`
   <section id="send-review" hidden>
     <p id="send-check" class="send-help" data-send-label="Review the full recipient and amount before confirming."></p>
     <dl id="send-facts"></dl>
+    <div id="send-prior" hidden><p data-send-label="An earlier transfer of this amount to this recipient is unconfirmed."></p><code id="send-prior-hash"></code>
+      <label><input type="checkbox" id="send-extra"> <span data-send-label="I authorize a separate payment."></span></label></div>
   </section>
   <p id="send-feedback" class="send-feedback" aria-live="polite" role="status" hidden></p>
   <div class="send-actions">
@@ -102,12 +109,14 @@ function render() {
   el('send-edit').hidden=step!=='edit';
   el('send-review').hidden=!(step==='review'||step==='sent');
   el('send-check').hidden=step!=='review';
+  el('send-prior').hidden=step!=='review' || !draft?.unconfirmedTransfer;
+  el('send-prior-hash').textContent=draft?.unconfirmedTransfer ?? '';
   el('send-facts').replaceChildren();
   if(draft && (step==='review'||step==='sent')) {
     fact('destination',draft.to,true);fact('amount',draft.coins);fact('fee',draft.feeCoins);
     fact('sender',draft.from,true);fact('nonce',draft.nonce);fact('chain',draft.chainId,true);
     if(step==='review') fact('deadline',new Date(draft.expiresAt).toLocaleTimeString(document.documentElement.lang));
-    if(receipt) {fact('height',receipt.height);fact('receipt',receipt.hash,true);}
+    if(receipt) {fact('height',receipt.height);fact('receipt',receipt.txHash ?? receipt.hash,true);}
   }
   const msg=working?step==='review'?'Waiting for ledger confirmation…':'Checking…':feedback;
   el('send-feedback').hidden=!msg;el('send-feedback').textContent=msg?tr(msg):'';
@@ -115,13 +124,15 @@ function render() {
   el('send-close').textContent=tr(['sent','uncertain'].includes(step)?'Close':'Cancel');
   el('send-close').disabled=working;
   el('send-next').textContent=tr(step==='unlock'?'Unlock':step==='edit'?'Review transfer':'Confirm transfer');
-  el('send-next').hidden=['sent','uncertain'].includes(step);el('send-next').disabled=working;
+  el('send-next').hidden=['sent','uncertain'].includes(step);
+  el('send-next').disabled=working || (step==='review' && !!draft?.unconfirmedTransfer && !el('send-extra').checked);
   for(const id of ['send-code','send-to','send-coins']) el(id).disabled=working;
 }
 
 function reset() {
   step='unlock';csrf='';draft=null;receipt=null;feedback='';working=false;
   el('send-code').value='';el('send-to').value='';el('send-coins').value='';
+  el('send-extra').checked=false;
 }
 function nano(coins) {
   if(typeof coins!=='string'||!/^\d{1,16}(?:\.\d{1,9})?$/.test(coins)) return null;
@@ -143,6 +154,7 @@ el('send-open').addEventListener('click',()=>{
   if(dialog.open) return;
   reset();render();dialog.showModal();el('send-code').focus();
 });
+el('send-extra').addEventListener('change',render);
 el('send-close').addEventListener('click',()=>{if(!working)dialog.close();});
 dialog.addEventListener('cancel',e=>{if(working)e.preventDefault();});
 dialog.addEventListener('close',()=>{reset();render();el('send-open').focus();});
@@ -168,10 +180,13 @@ el('send-next').addEventListener('click',async()=>{
         !/^[a-f0-9]{64}$/.test(d.from) || (/^[a-f0-9]{64}$/.test(address)&&address!==d.from) ||
         !/^[a-f0-9]{64}$/.test(d.chainId) || typeof d.draftId!=='string' || !d.draftId ||
         !Number.isSafeInteger(d.nonce)||d.nonce<1||!Number.isSafeInteger(d.expiresAt)||d.expiresAt<=Date.now()) throw Error();
-      draft=d;step='review';
+      if (d.unconfirmedTransfer!==undefined && !/^[a-f0-9]{64}$/.test(d.unconfirmedTransfer)) throw Error();
+      el('send-extra').checked=false;draft=d;step='review';
     } else if(step==='review') {
       if(!draft || draft.expiresAt<=Date.now()){step='edit';draft=null;feedback=translations.EXPIRED;return;}
-      const result=await api('confirm',{draftId:draft.draftId});
+      if (draft.unconfirmedTransfer && !el('send-extra').checked) return;
+      const result=await api('confirm',{draftId:draft.draftId,
+        ...(draft.unconfirmedTransfer?{acknowledgeUnconfirmed:draft.unconfirmedTransfer}:{})});
       if(result.confirmed!==true||result.chainId!==draft.chainId||result.to!==draft.to||
         result.coins!==draft.coins||result.feeCoins!=='0'||!Number.isSafeInteger(result.height)||
         !/^[a-f0-9]{64}$/.test(result.hash)) throw Error();
@@ -183,11 +198,13 @@ el('send-next').addEventListener('click',async()=>{
     if(e.code==='AUTH_REQUIRED'||previous==='unlock') {csrf='';step='unlock';}
     else if(previous==='review') {
       csrf='';
-      if(['WALLET_BUSY','settlement_pending','settlement_unconfirmed','settlement_rejected',
+      if(['WALLET_BUSY','settlement_rejected',
         'STATE_CHANGED','EXPIRED','INSUFFICIENT_FUNDS','INVALID_INPUT'].includes(e.code)) {
         step='unlock';draft=null;
-      } else {step='uncertain';feedback=terminalFailure;}
+      } else {step='uncertain';feedback=translations[e.code] ?? terminalFailure;}
     }
+    if (e.code==='previous_transfer_recovered') {step='uncertain';draft=null;csrf='';}
+    if (step==='uncertain' || e.code?.startsWith('settlement_')) el('refresh')?.click();
   } finally {
     working=false;render();
     if(previous!==step) {

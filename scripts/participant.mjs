@@ -17,6 +17,9 @@ const descriptor = join(directory,'process.json');
 const lockFile = join(directory,'process-lock.sqlite');
 const script = fileURLToPath(import.meta.url);
 const startupLimit = 60_000;
+// A relay may finish a previously admitted one-hour model request and retry
+// its signed acknowledgement. Keep status available while that stop drains.
+const stopLimit = 90 * 60_000;
 
 // The OS releases the SQLite lock on exit, even after a hard crash.
 function tryLock() {
@@ -60,7 +63,7 @@ async function control(op) {
   const proof=op==='unlock' ? ['request',op,nonce,issued] : ['request',op,nonce];
   const reply = await requestJson('http://127.0.0.1:'+port+'/'+op,{
     method:'POST',headers:{'x-gpuchain-nonce':nonce,'x-gpuchain-auth':mac(key,proof),'x-gpuchain-time':issued},
-    timeoutMs:op === 'stop' ? startupLimit : 5000,maxBytes:32768
+    timeoutMs:op === 'stop' ? stopLimit : 5000,maxBytes:32768
   });
   if (!equalMac(reply.auth,mac(key,['response',op,nonce,reply.state]))) {
     throw Error('Participant process identity could not be verified');
@@ -87,7 +90,8 @@ async function daemon() {
     if (!s.chainId || !s.address || !s.instanceId) throw Error('Local validator identity unavailable');
     // Return local status only. The complete provider registry may be large.
     const {providers,...summary} = s;
-    return {...summary,running:true,url:node.url,guiUrl:node.guiUrl,openAiUrl:node.openAiUrl,
+    return {...summary,running:true,...(closing?{stopping:true}:{}),relay:node.relayStatus?.(),
+      url:node.url,guiUrl:node.guiUrl,openAiUrl:node.openAiUrl,
       openAiError:node.openAiError,pid:process.pid};
   }
 
@@ -134,17 +138,18 @@ async function daemon() {
   function stop() {
     if (closing) return closing;
     closing = (async () => {
-      server.close();
+      let drain;
       try {
         await starting?.catch(()=>{});
-        await node?.close();
+        drain=await node?.close();
       } finally {
+        server.close();
         try {
           if (published) rmSync(descriptor,{force:true});
           rmSync(temp,{force:true});
         } finally { lock.close(); }
       }
-      return {running:false};
+      return {running:false,...(drain?.confirmed===false?{relayDrain:'unconfirmed'}:{})};
     })();
     return closing;
   }
@@ -211,7 +216,7 @@ async function manage(op) {
     } else {
       try {
         const state = await control(op === 'stop' ? 'stop' : 'status');
-        if (op !== 'start' || !state.starting) return state;
+        if (op !== 'start' || (!state.starting && !state.stopping)) return state;
       } catch (err) {
         // Another invocation can own the lock briefly before publishing its
         // control port, or be closing it while a new command is issued.

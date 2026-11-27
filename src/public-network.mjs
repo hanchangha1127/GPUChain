@@ -9,6 +9,7 @@ import { authenticate, verifyAdvance } from './checkpoint.mjs';
 import { verifyActivation } from './consensus.mjs';
 import { hash } from './crypto.mjs';
 import { requestJson } from './http.mjs';
+import { fetchSignedCheckpoint } from './checkpoint-fetch.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { directoryOrigins, DIRECTORY_URL, PEER_LIMIT } from './peer-directory.mjs';
 
@@ -140,7 +141,7 @@ function checkHistory(marks) {
 async function probeStatus(url, chainId, timeoutMs) {
   const status = await requestJson(url + '/v1/status', {timeoutMs, maxBytes:1024*1024});
   if (status.chainId !== chainId) throw Error('Status belongs to a different chain');
-  return {url,mode:status.mode,address:status.address,instanceId:status.instanceId};
+  return {url,mode:status.mode,address:status.address,instanceId:status.instanceId,height:status.height,tip:status.tip};
 }
 
 // All discovery requests are reads. A transaction is signed and submitted by the caller
@@ -187,8 +188,7 @@ export async function resolvePublicLedger({
         if (excludeInstanceId && result.value.instanceId === excludeInstanceId) continue;
         let checkpoint;
         try {
-          checkpoint = await requestJson(url + '/v1/checkpoint', {timeoutMs:timeLeft() || 1, maxBytes:64*1024*1024});
-          authenticate(checkpoint, chainId);
+          checkpoint = await fetchSignedCheckpoint(url,chainId,timeLeft() || 1,result.value);
           if (launchAnchor) verifyAdvance(launchAnchor,checkpoint);
         } catch { continue; }
         verifyPins(checkpoint.genesis);

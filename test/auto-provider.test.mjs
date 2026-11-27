@@ -57,8 +57,10 @@ test('automatically follows a late Strata launch, checks backend preference, KV 
   const p=await startAutoProvider({...identity(),backendUrls:[a.url,b.url],apiKey:'fixture',listenPort:0,intervalMs:50});
   t.after(()=>p.close());
   assert.equal(p.url,null);
+  assert.equal(p.engineStatus,'model_unloaded');
   a.loaded=b.loaded=true;
   await waitUntil(()=>p.backendUrl===a.url);
+  assert.equal(p.engineStatus,'ready');
   const address=p.url;
   let info=await (await fetch(address+'/v1/info')).json();
   assert.equal(info.engine,'ryzenstrata');
@@ -71,6 +73,7 @@ test('automatically follows a late Strata launch, checks backend preference, KV 
   assert.equal(info.backendModel,'iq3_xxs');
   b.loaded=false;
   await waitUntil(()=>p.backendUrl===null);
+  assert.equal(p.engineStatus,'profile_unavailable');
   assert.equal((await fetch(address+'/v1/info')).status,503);
   a.precision='fp16';
   await waitUntil(()=>p.backendUrl===a.url);
@@ -86,6 +89,7 @@ test('automatic binding does not displace a manually running adapter and can lat
   t.after(()=>p.close());
   try {
     assert.equal(p.url,null);
+    assert.equal(p.engineStatus,'adapter_port_in_use');
     assert.equal(await (await fetch(manualUrl)).text(),'existing listener');
   } finally {
     await new Promise(resolve=>{manual.close(resolve);manual.closeIdleConnections();});

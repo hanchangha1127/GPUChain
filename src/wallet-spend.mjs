@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { hasPendingInference, recoverPendingInference } from './inference-settlement.mjs';
+import { walletPaymentStatus, recoverWalletPayment } from './inference-settlement.mjs';
 
 // All checkouts run by this OS user coordinate the same wallet and chain.
 // The OS releases the SQLite writer lock when a process dies. The small
@@ -32,12 +32,13 @@ export function walletSpendCoordinator(chainId,address,{root=join(homedir(),'.gp
     const lock=tryAcquire();
     if (lock) {
       lock.close();
-      return hasPendingInference(directory) ? 'inference' : null;
+      const {pending}=walletPaymentStatus(directory);
+      return pending==='transfer'?'transaction':pending ?? null;
     }
     try { return readFileSync(activityPath,'utf8')==='inference' ? 'inference' : 'transaction'; }
     catch { return 'transaction'; }
   }
-  async function run(kind,resolveLedger,fn,{signal,waitMs=3_700_000}={}) {
+  async function run(kind,resolveLedger,fn,{signal,waitMs=3_700_000,digest}={}) {
     mkdirSync(directory,{recursive:true,mode:0o700});
     const deadline=Date.now()+waitMs;
     let lock;
@@ -51,9 +52,13 @@ export function walletSpendCoordinator(chainId,address,{root=join(homedir(),'.gp
     }
     try {
       writeFileSync(activityPath,kind,{mode:0o600});
-      const recovered=await recoverPendingInference(directory,address,resolveLedger);
-      if (kind==='recovery') return recovered;
-      if (kind==='inference' && recovered) throw Object.assign(
+      const recovery=kind==='recovery' || kind==='review';
+      const recovered=await recoverWalletPayment(directory,address,resolveLedger,undefined,{includeReview:recovery,digest,lookupOnly:kind==='review'});
+      if (recovery) return recovered;
+      if (kind==='transfer' && recovered?.type==='transfer') throw Object.assign(
+        Error('The previous transfer of '+recovered.coins+' coins to '+recovered.to+' was confirmed at height '+recovered.height+
+          '. Review wallet activity before authorizing a new transfer.'),{status:409,code:'previous_transfer_recovered'});
+      if (kind==='inference' && recovered && recovered.type!=='transfer') throw Object.assign(
         Error('The previous inference payment was confirmed at height '+recovered.height+'. Submit a new request to continue.'),
         {status:409,code:'previous_inference_recovered'});
       signal?.throwIfAborted();

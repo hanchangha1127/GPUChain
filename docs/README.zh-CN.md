@@ -8,7 +8,7 @@ GPUChain 主网账本中已有记录的钱包可免费领取 **1,000 枚代币**
 
 1. 在 GPUChain 仓库中运行 `npm run gui`，或在 Windows 上打开 **GPUChain Wallet.cmd**，复制钱包的 64 位公开地址。
 2. 在官方网站粘贴地址，点击**检查地址**。[https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
-3. 如果地址符合条件，点击**领取 1,000 枚代币**。如果刚在本地创建了钱包，请等地址在主网账本中有记录后再试。
+3. 如果地址符合条件，点击**领取 1,000 枚代币**。如果刚在本地创建了钱包，请在首笔活动（例如收到一笔 GPUChain 转账）记入主网账本后再次检查。
 
 新的 USDT 支付已暂停。已付款的用户仍可在同一网站输入原订单号查询订单状态。
 

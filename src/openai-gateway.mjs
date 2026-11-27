@@ -98,6 +98,9 @@ async function readBody(req) {
 function asGatewayError(error) {
   if (error instanceof GatewayError) return error;
   if (error?.code==='previous_inference_recovered') return new GatewayError(409,error.code,error.message);
+  if (['relay_unreachable','relay_partial','provider_capability_mismatch','no_registered_provider','no_eligible_provider'].includes(error?.code)) {
+    return new GatewayError(503,error.code,error.message);
+  }
   if (['settlement_pending','settlement_unconfirmed','settlement_rejected'].includes(error?.code)) {
     return new GatewayError(409,error.code,error.message);
   }

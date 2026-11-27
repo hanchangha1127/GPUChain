@@ -1,5 +1,5 @@
 import { addressFromPrivateKey, hash } from '../../src/crypto.mjs';
-import { authenticate, nextCheckpoint } from '../../src/checkpoint.mjs';
+import { authenticate, checkpointHttp, nextCheckpoint } from '../../src/checkpoint.mjs';
 import { activateCheckpoint, createActivation } from '../../src/consensus.mjs';
 import { checkEnrollment, checkReadiness, limitedJson, readCandidates, recordCandidate } from '../../src/enrollment.mjs';
 import { DIRECTORY_URL, directoryOrigins } from '../../src/peer-directory.mjs';
@@ -176,7 +176,10 @@ async function dispatch(request, env, options) {
   const head = await readHead(db, initial);
   if (isRead) {
     if (path === '/ledger') return ledgerPage(head.state,Boolean(head.authority));
-    if (path === '/v1/checkpoint') return json(head);
+    if (path === '/v1/checkpoint') {
+      const {body,status,headers}=checkpointHttp(head,request.headers.get('if-none-match'));
+      return new Response(body,{status,headers});
+    }
     if (path === '/v1/genesis') return json(head.genesis);
     if (path === '/v1/consensus/candidates') {
       const {candidates} = await readCandidates(db);
@@ -200,7 +203,7 @@ async function dispatch(request, env, options) {
     throw new HttpError(507, 'Checkpoint exceeds the capacity of this hosted node');
   }
   try {await commitHostedTransaction(db,head.state,next.state,checkpoint,tx.payload.type,
-    tx.payload.type==='inference'?sequencerOutcome(block):undefined);}
+    ['inference','transfer'].includes(tx.payload.type)?sequencerOutcome(block):undefined);}
   catch(err){if(err.status===409 || err.status===507)throw new HttpError(err.status,err.message);throw err;}
   return json({block}, 201);
 }

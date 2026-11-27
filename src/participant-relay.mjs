@@ -5,8 +5,14 @@ import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 // own ephemeral transport keys, while the adapter serializes local GPU work.
 export function manageProviderRelays({wallet,chainId,adapter,node,enabled=true,intervalMs=5000}) {
   const workers = new Map();
-  let pending, stopped = false, reason = enabled ? 'waiting-for-model' : 'disabled';
-  async function update() {
+  let stopping, reason = enabled ? 'waiting-for-model' : 'disabled';
+  function retire(url,entry) {
+    // Other origins can start immediately. Never install a new key at this
+    // origin while its previous worker still owns an admitted job.
+    entry.drain??=entry.worker.close().finally(()=>workers.delete(url));
+    return entry.drain;
+  }
+  function update() {
     const {status,checkpoint} = node.snapshot();
     const ready = enabled && adapter?.backendUrl && adapter?.url;
     const registered = checkpoint?.state.providers.includes(wallet.address);
@@ -17,44 +23,37 @@ export function manageProviderRelays({wallet,chainId,adapter,node,enabled=true,i
     }
     reason = !enabled ? 'disabled' : !ready ? 'waiting-for-model' : !registered
       ? 'waiting-for-registration' : 'connecting';
-    for (const [url,worker] of workers) {
-      if (!origins.has(url)) {
-        // A slow local health probe or an idle unload must not interrupt a
-        // signed job already being answered. Let it return its sealed receipt.
-        if (worker.status().state==='busy') continue;
-        workers.delete(url);
-        await worker.close();
-      }
+    for (const [url,entry] of workers) {
+      if (!origins.has(url)) retire(url,entry).catch(()=>{reason='error';});
     }
-    if (stopped) return;
     for (const relayUrl of origins) {
       if (workers.has(relayUrl)) continue;
-      workers.set(relayUrl,startProviderRelay({wallet,chainId,relayUrl,adapterUrl:adapter.url,
+      const worker=startProviderRelay({wallet,chainId,relayUrl,adapterUrl:adapter.url,
         readState:async()=>{
           const current = node.snapshot().checkpoint;
           if (!current || current.state.chainId !== chainId) throw Error('Waiting for verified network state');
           return current.state;
-        }}));
+        }});
+      workers.set(relayUrl,{worker});
     }
   }
   function sync() {
-    if (!stopped && !pending) pending = update().catch(()=>{reason='error';}).finally(()=>{pending=undefined;});
+    try { update(); } catch { reason='error'; }
   }
   sync();
   const timer = setInterval(sync,intervalMs);
   timer.unref();
   return {
     status() {
-      const states = [...workers.values()].map(w=>w.status().state);
-      const mode = ['busy','ready','error','offline'].find(s=>states.includes(s)) ?? reason;
+      const states = [...workers.values()].map(entry=>entry.worker.status().state);
+      const mode = ['busy','ready','draining','error','offline'].find(s=>states.includes(s)) ?? reason;
       return {mode,reachableRelays:states.filter(s=>s==='ready'||s==='busy').length,backendUrl:adapter?.backendUrl ?? null};
     },
-    async close() {
-      stopped = true;
+    close() {
       clearInterval(timer);
-      await pending;
-      await Promise.allSettled([...workers.values()].map(w=>w.close()));
-      workers.clear();
+      stopping??=Promise.all([...workers].map(([url,entry])=>retire(url,entry)))
+        .then(results=>({confirmed:results.every(result=>result.confirmed)}));
+      return stopping;
     }
   };
 }

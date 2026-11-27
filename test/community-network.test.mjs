@@ -27,11 +27,18 @@ test('a fresh client settles on independent peers after automatic opt-in, seed p
   const root = await mkdtemp(join(tmpdir(),'gpuchain-community-'));
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE ledger_head(id INTEGER PRIMARY KEY,tip TEXT NOT NULL,checkpoint TEXT NOT NULL)');
-  const sql = {withSession() { return this; },prepare(query) {
+  const sql = {withSession() { return this; },batch(statements) {
+    db.exec('BEGIN');
+    try {
+      const changes=statements.map(statement=>statement.run());
+      db.exec('COMMIT');
+      return changes;
+    } catch (error) {db.exec('ROLLBACK');throw error;}
+  },prepare(query) {
     const stmt = db.prepare(query);
     let args = [];
     return {bind(...values) {args=values;return this;},
-      async first() {return stmt.get(...args) ?? null;},async run() {return {meta:{changes:stmt.run(...args).changes}};}};
+      async first() {return stmt.get(...args) ?? null;},run() {return {meta:{changes:stmt.run(...args).changes}};}};
   }};
   const operator = generateWallet(), buyer = generateWallet();
   const voters = Array.from({length:3},generateWallet);

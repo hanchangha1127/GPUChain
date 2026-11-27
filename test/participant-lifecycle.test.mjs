@@ -24,6 +24,9 @@ async function setup(t) {
   await writeFile(join(scripts,'participate.mjs'),`
     import {createServer} from 'node:http';
     import {once} from 'node:events';
+    import {existsSync} from 'node:fs';
+    import {join} from 'node:path';
+    import {setTimeout as delay} from 'node:timers/promises';
     export async function startParticipant() {
       const s=createServer((_req,res)=>{
         res.setHeader('content-type','application/json');
@@ -31,10 +34,16 @@ async function setup(t) {
       });
       s.listen(0,'127.0.0.1');
       await once(s,'listening');
-      let openAiUrl=null;
+      let openAiUrl=null,draining=false;
       return {url:'http://127.0.0.1:'+s.address().port,issueUnlock:()=>({code:'0123456789',expiresAt:Date.now()+120000}),
+        relayStatus:()=>({mode:draining?'draining':'ready'}),
         get openAiUrl(){ return openAiUrl; },enableOpenAi:async()=>openAiUrl='http://127.0.0.1:8792/v1',
-        close:()=>new Promise(r=>s.close(r))};
+        async close(){
+          draining=true;
+          while(existsSync(join(process.env.GPUCHAIN_PARTICIPANT_DIR,'hold-drain'))) await delay(10);
+          await new Promise(r=>s.close(r));
+          return {confirmed:true};
+        }};
     }
   `);
   async function run(...args) {
@@ -99,4 +108,33 @@ test('abrupt loss releases the lifetime lock and a fresh start replaces stale co
   assert.equal(next.running,true);
   const after = JSON.parse(await readFile(join(data,'process.json'),'utf8'));
   assert.notEqual(before.key,after.key);
+});
+
+test('managed stop keeps its identity and authenticated status visible while its relay drains',async t=>{
+  const {run,data}=await setup(t);
+  const started=await run('start');
+  const hold=join(data,'hold-drain');
+  await writeFile(hold,'');
+  const stopped=run('stop');
+  let starting;
+  try {
+    let status;
+    for (let i=0;i<25;i++) {
+      status=await run('status');
+      if (status.stopping) break;
+      await delay(20);
+    }
+    assert.equal(status.pid,started.pid);
+    assert.equal(status.stopping,true);
+    assert.equal(status.relay.mode,'draining');
+    // Racing start must wait for this generation to release its wallet and database.
+    starting=run('start');
+    assert.equal((await run('status')).pid,started.pid);
+  } finally {
+    await rm(hold,{force:true});
+  }
+  assert.deepEqual(await stopped,{running:false});
+  const next=await starting;
+  assert.notEqual(next.pid,started.pid);
+  assert.equal(next.instanceId,started.instanceId);
 });

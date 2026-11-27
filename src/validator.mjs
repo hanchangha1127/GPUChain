@@ -4,7 +4,8 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
-import { authenticate, verifyAdvance } from './checkpoint.mjs';
+import { authenticate, checkpointHttp, verifyAdvance } from './checkpoint.mjs';
+import { fetchSignedCheckpoint } from './checkpoint-fetch.mjs';
 import { certify, consensusCandidate, votePayload } from './consensus.mjs';
 import { addressFromPrivateKey, hash, sign, verify } from './crypto.mjs';
 import { requestJson } from './http.mjs';
@@ -211,7 +212,7 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
           return true;
         }
         if (info.height === head.state.height) return info.tip === head.state.tip;
-        const remote = await requestJson(peer.url+'/v1/checkpoint',{timeoutMs:peerTimeoutMs,maxBytes:MAX_CHECKPOINT});
+        const remote = await fetchSignedCheckpoint(peer.url,genesis.hash,peerTimeoutMs,info);
         if (!closed) install(remote);
         return true;
       });
@@ -397,7 +398,11 @@ export async function startValidator({dir,genesis,wallet,origin,port=8790,listen
         return send(200,{height:head.state.height,tip:head.state.tip});
       }
       need(head,503,'Waiting for validator activation');
-      if (req.method === 'GET' && path === '/v1/checkpoint') return send(200,head);
+      if (req.method === 'GET' && path === '/v1/checkpoint') {
+        const reply=checkpointHttp(head,req.headers['if-none-match']);
+        res.writeHead(reply.status,reply.headers);
+        return res.end(reply.body);
+      }
       need(req.method === 'POST',404,'Route not found');
       if (path === '/v1/transactions') return send(201,await propose(await body(req,MAX_TX)));
       const match = /^\/v1\/consensus\/(prepare|accept)$/.exec(path);

@@ -163,6 +163,8 @@ details[open] .chevron {transform:rotate(225deg)}
 .send-dialog label {display:block;font-size:.87rem;font-weight:650;margin:.95rem 0 .3rem}
 .send-dialog input {display:block;width:100%;padding:.68rem .75rem;border-radius:7px;border:1px solid #a7bcb2;color:#13372b;background:#fbfcfb;font:inherit}
 .send-dialog input:focus-visible {outline:2px solid #258574;outline-offset:2px}
+.send-dialog input[type="checkbox"] {display:inline;width:auto}
+#send-prior-hash,#payment-reviews,#payment-result {overflow-wrap:anywhere}
 .send-dialog dl>div {padding:.4rem 0;border-bottom:1px solid var(--line)}
 .send-dialog dd {margin:.18rem 0 0;overflow-wrap:anywhere;font-size:.91rem;font-variant-numeric:tabular-nums}
 .send-dialog .mono {font-size:.78rem}

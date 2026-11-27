@@ -7,7 +7,7 @@ import test from 'node:test';
 import { generateWallet, hash, sign } from '../src/crypto.mjs';
 import { CONTEXT, MODEL, createGenesis } from '../src/ledger.mjs';
 import { readVerifiedState, startNode } from '../src/node.mjs';
-import { verifyOutcome } from '../src/transaction-outcome.mjs';
+import { OUTCOME_SLOTS, verifyOutcome } from '../src/transaction-outcome.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'gpuchain-snapshot-test-'));
@@ -92,6 +92,8 @@ test('concurrent duplicate and restarted replay settle only once; disk stores no
     }
   }
   const restarted = await net.launch();
+  const transferProof=await (await fetch(restarted.url+'/v1/transaction-outcomes/'+hash(tx))).json();
+  assert.deepEqual(verifyOutcome(transferProof,tx,snapshot),{height:1,hash:afterTransfer.tip});
   const outcome=await (await fetch(restarted.url+'/v1/transaction-outcomes/'+hash(receipt))).json();
   assert.deepEqual(verifyOutcome(outcome,receipt,snapshot),{height:2,hash:expected.tip});
   assert.deepEqual(await readVerifiedState(restarted.url, net.genesis.hash), expected);
@@ -104,6 +106,12 @@ test('followers reject tampered checkpoints, rollbacks, and conflicting signed t
   const net = await fixture(t);
   const authority = await net.launch();
   const old = await checkpoint(authority.url);
+  const endpoint=authority.url+'/v1/checkpoint';
+  const etag=(await fetch(endpoint)).headers.get('etag');
+  assert.ok(etag);
+  const unchanged=await fetch(endpoint,{headers:{'if-none-match':etag}});
+  assert.equal(unchanged.status,304);
+  assert.equal(await unchanged.text(),'');
   let serving = old;
   const proxy = createServer((req, res) => {
     if (req.url !== '/v1/checkpoint') return res.writeHead(404).end();
@@ -115,6 +123,7 @@ test('followers reject tampered checkpoints, rollbacks, and conflicting signed t
   const follower = await net.launch({dir: join(net.root, 'follower'), wallet: undefined,
     upstream, syncIntervalMs: 60_000});
   assert.equal((await submit(authority.url, net.transfer(1))).status, 201);
+  assert.equal((await fetch(endpoint,{headers:{'if-none-match':etag}})).status,200);
   const current = await checkpoint(authority.url);
   serving = current;
   await follower.sync();
@@ -147,22 +156,30 @@ async function diskBytes(dir) {
   return total;
 }
 
-test('fixed-wallet database stays compact across one hundred additional transfers', async t => {
+test('fixed-wallet storage plateaus as transfers replace a full ring of compact outcomes', async t => {
   const net = await fixture(t);
   const first = await net.launch();
-  assert.equal((await submit(first.url, net.transfer(1))).status, 201);
+  for (let nonce=1;nonce<=OUTCOME_SLOTS;nonce++) {
+    assert.equal((await submit(first.url,net.transfer(nonce))).status,201);
+  }
   await net.stop(first);
   const baseline = await diskBytes(net.dir);
   const node = await net.launch();
-  for (let nonce = 2; nonce <= 101; nonce++) {
+  const total=OUTCOME_SLOTS*2;
+  for (let nonce = OUTCOME_SLOTS+1; nonce <= total; nonce++) {
     assert.equal((await submit(node.url, net.transfer(nonce))).status, 201);
   }
   const state = await readVerifiedState(node.url, net.genesis.hash);
-  assert.equal(state.balances[net.provider.address], 707);
-  assert.equal(state.height, 101);
+  assert.equal(state.balances[net.provider.address], 7*total);
+  assert.equal(state.height,total);
+  const proofUrl=nonce=>node.url+'/v1/transaction-outcomes/'+hash(net.transfer(nonce));
+  assert.equal((await fetch(proofUrl(OUTCOME_SLOTS))).status,404);
+  const firstRetained=net.transfer(OUTCOME_SLOTS+1);
+  const proof=await (await fetch(proofUrl(OUTCOME_SLOTS+1))).json();
+  assert.equal(verifyOutcome(proof,firstRetained,await checkpoint(node.url)).height,OUTCOME_SLOTS+1);
   await net.stop(node);
   const final = await diskBytes(net.dir);
-  t.diagnostic('Closed directory bytes: 1 transfer = ' + baseline + ', 101 transfers = ' + final);
+  t.diagnostic('Closed directory bytes after one and two full rings: '+baseline+', '+final);
   // Permit SQLite a few additional pages, while catching linear block/receipt storage.
   assert.ok(final <= baseline + 16_384, 'Unexpected fixed-wallet storage growth');
 });

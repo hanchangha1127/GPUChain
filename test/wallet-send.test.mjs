@@ -12,6 +12,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { walletSpendCoordinator } from '../src/wallet-spend.mjs';
+import { startNode, readCheckpoint } from '../src/node.mjs';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 
 function fixture(spendRoot) {
   const seq=generateWallet(), wallet=generateWallet(), recipient=generateWallet();
@@ -45,6 +48,72 @@ function pair(sender,origin='http://127.0.0.1:1234') {
   const {code}=sender.issueCode();
   return {...sender.unlock({code},origin),origin};
 }
+
+test('lost transfer ACK across a GUI restart recovers the approved debit without signing the retry',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'gpuchain-gui-recovery-'));
+  const wallet=generateWallet(), recipient=generateWallet(), seq=generateWallet();
+  const genesis=createGenesis(seq,{allocations:{[wallet.address]:100},providers:[]});
+  const node=await startNode({dir:join(root,'node'),genesis,wallet:seq,port:0});
+  let posts=0,connected=true,hideProof=false;
+  const proxy=createServer(async(req,res)=>{
+    if (req.url==='/v1/transactions' && req.method==='POST') {
+      posts++;
+      const data=[];
+      for await (const chunk of req) data.push(chunk);
+      const result=await fetch(node.url+req.url,{method:'POST',body:Buffer.concat(data),headers:{'content-type':'application/json'}});
+      assert.equal(result.status,201);
+      await result.arrayBuffer();
+      connected=false;
+      return res.destroy();
+    }
+    if (req.url.startsWith('/v1/transaction-outcomes/')) {
+      assert.equal(req.method,'GET');
+      if (hideProof) return res.writeHead(404).end();
+      return res.writeHead(200,{'content-type':'application/json'}).end(await (await fetch(node.url+req.url)).text());
+    }
+    res.writeHead(404).end();
+  });
+  proxy.listen(0,'127.0.0.1'); await once(proxy,'listening');
+  t.after(async()=>{await new Promise(resolve=>proxy.close(resolve));await node.close();await rm(root,{recursive:true,force:true});});
+  const url='http://127.0.0.1:'+proxy.address().port;
+  const resolveLedger=async()=>{
+    if (!connected) throw Error('Connection interrupted');
+    const checkpoint=await readCheckpoint(node.url,genesis.hash);
+    return {url,checkpoint,state:checkpoint.state};
+  };
+  const sender=()=>createWalletSender({wallet,pin:genesis.hash,resolveLedger,
+    spends:walletSpendCoordinator(genesis.hash,wallet.address,{root})});
+  const first=sender(), auth=pair(first), input={to:recipient.address,coins:'0.000000007'};
+  const draft=await first.prepare(input,auth);
+  await assert.rejects(first.confirm({draftId:draft.draftId},auth),{code:'settlement_pending'});
+  const second=sender(), {lastTransfer}=second.paymentStatus();
+  assert.equal(lastTransfer.status,'pending');
+  assert.equal(lastTransfer.to,draft.to);
+  assert.equal(lastTransfer.coins,draft.coins);
+  assert.equal((await readCheckpoint(node.url,genesis.hash)).state.balances[recipient.address],7);
+  connected=true;
+  await assert.rejects(second.prepare(input,pair(second)),{code:'previous_transfer_recovered'});
+  assert.equal(second.paymentStatus().lastTransfer.status,'confirmed');
+  assert.equal((await second.checkOutcome(lastTransfer.txHash)).height,1);
+  assert.equal(posts,1);
+  await assert.rejects(second.confirm({draftId:draft.draftId},auth),{code:'AUTH_REQUIRED'});
+
+  hideProof=true;
+  const a=pair(second), d=await second.prepare(input,a);
+  await assert.rejects(second.confirm({draftId:d.draftId},a),{code:'settlement_pending'});
+  connected=true;
+  await assert.rejects(second.prepare(input,pair(second)),{code:'settlement_unconfirmed'});
+  const signedHash=second.paymentStatus().lastTransfer.txHash;
+  const reviewed=pair(second);
+  const different=await second.prepare({...input,coins:'0.000000009'},reviewed);
+  assert.equal(different.unconfirmedTransfer,undefined);
+  const repeated=await second.prepare(input,reviewed);
+  assert.equal(repeated.unconfirmedTransfer,signedHash);
+  await assert.rejects(second.confirm({draftId:repeated.draftId},reviewed),{code:'STATE_CHANGED'});
+  assert.equal(posts,2);
+  await assert.rejects(second.confirm({draftId:repeated.draftId,acknowledgeUnconfirmed:signedHash},reviewed),{code:'settlement_pending'});
+  assert.equal(posts,3);
+});
 
 test('wallet transfer preparation waits for another spend and reviews the fresh nonce',async t=>{
   const root=await mkdtemp(join(tmpdir(),'gpuchain-gui-spend-'));

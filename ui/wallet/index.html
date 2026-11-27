@@ -48,13 +48,21 @@
         <dl class="rows">
           <div><dt><span data-i18n="Inference on this node">Inference on this node</span></dt><dd id="node-inference">—</dd></div>
           <div><dt><span data-i18n="Local provider adapter">Local provider adapter</span></dt><dd id="adapter">—</dd></div>
+          <div><dt><span data-i18n="Local engine detection">Local engine detection</span></dt><dd id="engine-check">—</dd></div>
           <div><dt><span data-i18n="This wallet as a provider">This wallet as a provider</span></dt><dd id="registered">—</dd></div>
           <div><dt><span data-i18n="GPUChain relay">GPUChain relay</span></dt><dd id="relay-mode">—</dd></div>
           <div><dt><span data-i18n="Local engine endpoint">Local engine endpoint</span></dt><dd id="engine-origin">—</dd></div>
           <div id="activity-row" hidden><dt><span data-i18n="Adapter activity">Adapter activity</span></dt><dd id="activity">—</dd></div>
         </dl>
+        <button type="button" class="refresh" id="check-routes" data-i18n="Check OpenCode providers">Check OpenCode providers</button>
+        <p id="route-diagnosis" aria-live="polite" hidden></p>
       </section>
     </div>
+    <section class="panel send-panel" id="starter-record-panel" hidden>
+      <div><h2 data-i18n="Starter coins">Starter coins</h2>
+        <p id="starter-record"></p></div>
+      <a href="https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/" target="_blank" rel="noopener noreferrer" data-i18n="Open claim site">Open claim site</a>
+    </section>
     <section class="panel network" aria-labelledby="network-heading">
       <div class="section-head"><div class="section-name"><span class="icon-box"><i class="network-icon" aria-hidden="true"></i></span><h2 id="network-heading"><span data-i18n="Network">Network</span></h2></div><span class="subtle" id="consensus">—</span></div>
       <div class="network-body">
@@ -71,6 +79,9 @@
     <details class="panel details">
       <summary><span data-i18n="Wallet and connection details">Wallet and connection details</span><span class="chevron" aria-hidden="true"></span></summary>
       <dl class="rows details-list">
+        <div id="last-transfer-row" hidden><dt data-i18n="Latest transfer">Latest transfer</dt><dd id="last-transfer" class="mono"></dd></div>
+        <div id="payment-review-row" hidden><dt data-i18n="Check payment outcome">Check payment outcome</dt><dd id="payment-reviews"></dd></div>
+        <div id="payment-result-row" hidden><dt data-i18n="Payment outcome">Payment outcome</dt><dd id="payment-result" role="status"></dd></div>
         <div><dt><span data-i18n="Wallet nonce">Wallet nonce</span></dt><dd id="nonce">—</dd></div>
         <div><dt><span data-i18n="Network name">Network name</span></dt><dd id="network-name">—</dd></div>
         <div><dt><span data-i18n="Chain ID">Chain ID</span></dt><dd class="mono" id="chain-id">—</dd></div>

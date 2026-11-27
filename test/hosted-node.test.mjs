@@ -71,6 +71,13 @@ test('hosted sequencer settles once under concurrent submissions and serves a na
   await once(server, 'listening');
   t.after(() => new Promise(resolve => server.close(resolve)));
   const state = await readVerifiedState('http://127.0.0.1:' + server.address().port, genesis.hash);
+  const fresh=await request('/v1/checkpoint');
+  const etag=fresh.headers.get('etag');
+  assert.ok(etag);
+  const same=await request('/v1/checkpoint',{headers:{'if-none-match':etag}});
+  assert.equal(same.status,304);
+  assert.equal(same.headers.get('etag'),etag);
+  assert.equal(await same.text(),'');
   assert.equal(state.height, 1);
   assert.equal(state.balances[provider.address], 10012);
   assert.equal(state.epochTokens, 42);
@@ -149,7 +156,8 @@ test('hosted enrollment requires three live approved owners and commits one fina
   const staleAttempt = propose(intent(2));
   await pause.started.promise;
   const payload = {type:'transfer',chainId:genesis.hash,from:payer.address,to:seq.address,amount:2,nonce:1};
-  assert.equal((await submit({payload,signature:sign(payer.privateKey,payload)})).status,201);
+  const transfer={payload,signature:sign(payer.privateKey,payload)};
+  const committed=await (await submit(transfer)).json();
   pause.release.resolve();
   assert.equal((await staleAttempt).status,409);
   const last = await (await request('/v1/checkpoint')).json();
@@ -168,6 +176,8 @@ test('hosted enrollment requires three live approved owners and commits one fina
     if (reply.active) assert.deepEqual(reply.checkpoint,after);
   }
   assert.equal((await (await request('/v1/status')).json()).mode,'retired');
+  const transferProof=await (await request('/v1/transaction-outcomes/'+hash(transfer))).json();
+  assert.deepEqual(verifyOutcome(transferProof,transfer,after),{height:2,hash:committed.block.hash});
   assert.deepEqual((await (await propose(intent(1))).json()).checkpoint,after);
   assert.equal((await submit({payload,signature:sign(payer.privateKey,payload)})).status,409);
   const legacyCAS = sqlite.prepare('UPDATE ledger_head SET tip=? WHERE id=1 AND tip=?').run('wrong',last.state.tip);

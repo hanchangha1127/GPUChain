@@ -4,6 +4,8 @@ import { once } from 'node:events';
 import { CONTEXT, EPOCH_TOKENS, MODEL, RATES } from './ledger.mjs';
 import { isAmount } from './amount.mjs';
 import { kvCacheAtLeastQ8 } from './kv-cache.mjs';
+import { DISTRIBUTION_RESERVE } from './reserve-policy.mjs';
+import { knownStarterWallet, starterClaimHeight } from './starter-grants.mjs';
 import { requestJson } from './http.mjs';
 
 const assets = [
@@ -60,6 +62,13 @@ function sampler(origin) {
   };
 }
 
+function starterRecord(state,address) {
+  if (state?.chainId!==DISTRIBUTION_RESERVE.chainId || state.networkStage!=='mainnet') return null;
+  if (address===DISTRIBUTION_RESERVE.address) return 'ineligible';
+  if (starterClaimHeight(state,address)!==null) return 'claimed';
+  return knownStarterWallet(state,address)?'recorded':'unrecorded';
+}
+
 function overview({status, checkpoint, relay, spendActivity}, sampled) {
   if (!hex64(status?.address) || !hex64(status.chainId)) throw Error('Invalid node identity');
   const state = checkpoint?.state;
@@ -94,6 +103,7 @@ function overview({status, checkpoint, relay, spendActivity}, sampled) {
   // other accounts' balances and the full checkpoint never enter the UI response.
   return {
     sampledAt:new Date().toISOString(),
+    starterRecord:starterRecord(state,address),
     relay:relay ? {mode:relay.mode,reachableRelays:relay.reachableRelays,backendUrl:ledgerOrigin(relay.backendUrl)} : null,
     wallet:{address,balanceNanocoins:balance,nonce,
       ...(['inference','transaction'].includes(spendActivity)?{spendActivity}:{})},
@@ -126,9 +136,10 @@ async function readSendBody(req) {
   return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
 }
 
-export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://127.0.0.1:8789',sender}) {
+export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://127.0.0.1:8789',sender,diagnoseRoutes,localEngineStatus}) {
   if (typeof getSnapshot !== 'function') throw Error('A local checkpoint reader is required');
   const sample = sampler(localProvider(providerUrl));
+  let routeCheck=null,routeExpires=0;
   const pages = new Map(await Promise.all(assets.map(async ([path,file,type]) =>
     [path,{data:await readFile(new URL(file,import.meta.url)),type}])));
   const server = createServer(async (req,res) => {
@@ -183,10 +194,36 @@ export async function startWalletUi({getSnapshot,port=8791,providerUrl='http://1
         }
       }
       if (req.method !== 'GET') return error(405,'Expected GET',{allow:'GET'});
+      const review=/^\/api\/payment-outcome\/([0-9a-f]{64})$/.exec(req.url);
+      if (review && sender?.checkOutcome) {
+        if (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site']!=='same-origin') return error(403,'Local access only');
+        try {
+          const receipt=await sender.checkOutcome(review[1]);
+          return send(200,'application/json',JSON.stringify({status:receipt?'confirmed':'unavailable',height:receipt?.height}));
+        } catch (err) {
+          const status={settlement_pending:'pending',settlement_unconfirmed:'unconfirmed',WALLET_BUSY:'busy'}[err.code];
+          if (!status) throw err;
+          return send(200,'application/json',JSON.stringify({status}));
+        }
+      }
+      if (req.url==='/api/inference-routes' && diagnoseRoutes) {
+        if (req.headers['sec-fetch-site']==='cross-site') return error(403,'Local access only');
+        if (!routeCheck || Date.now()>routeExpires) {
+          routeExpires=Infinity;
+          routeCheck=Promise.resolve().then(diagnoseRoutes).catch(()=>({code:'ledger_unavailable'}))
+            .finally(()=>{routeExpires=Date.now()+15_000;});
+        }
+        return send(200,'application/json',JSON.stringify(await routeCheck));
+      }
       if (req.url === '/api/overview') {
         if (req.headers['sec-fetch-site'] === 'cross-site') return error(403,'Local access only');
         const [snapshot,provider] = await Promise.all([getSnapshot(),sample()]);
-        return send(200,'application/json; charset=utf-8',JSON.stringify(overview(snapshot,provider)));
+        const data=overview(snapshot,provider);
+        const {lastTransfer,reviews}=sender?.paymentStatus?.() ?? {};
+        if (lastTransfer) data.wallet.lastTransfer=lastTransfer;
+        if (reviews?.length) data.wallet.unconfirmedPayments=reviews;
+        if (localEngineStatus) data.inference.engineStatus=localEngineStatus();
+        return send(200,'application/json; charset=utf-8',JSON.stringify(data));
       }
       const page = pages.get(req.url);
       if (page) return send(200,page.type,page.data);

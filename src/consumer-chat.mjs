@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { charge, CONTEXT, MODEL, spendableBalance } from './ledger.mjs';
 import { formatCoins } from './amount.mjs';
 import { chatResponseHash, normalizeChatMessages, normalizeChatOptions, validateChatReply } from './chat-protocol.mjs';
-import { inferenceRoutes } from './inference-routes.mjs';
+import { inferenceRoutes, inspectInferenceRoutes } from './inference-routes.mjs';
 import { probeProvider } from './routing.mjs';
 import { RelayAdmissionRejected, relayInfer } from './relay-client.mjs';
 import { requestJson } from './http.mjs';
@@ -69,11 +69,18 @@ async function selectTarget(ledger, {wallet, transport='auto', providerAddress, 
       if (ready) return ready;
     } else discovery.excludeProvider = preferredProvider;
   }
-  const [target] = await inferenceRoutes(ledger,{...discovery,provider:providerAddress});
+  const {routes:[target],diagnostic} = await inspectInferenceRoutes(ledger,{...discovery,provider:providerAddress});
   signal?.throwIfAborted();
-  if (!target && transport==='relay') {
-    throw Object.assign(Error('No compatible encrypted GPUChain provider is ready for this wallet.'),{
-      status:503,code:'no_encrypted_provider'});
+  if (!target && transport!=='direct') {
+    const reasons={
+      relay_unreachable:'No GPUChain relay returned a usable provider directory. Check the relay connection and try again.',
+      relay_partial:'Some GPUChain relays are unavailable, and the reachable relays have no matching provider.',
+      provider_capability_mismatch:'Online GPUChain providers do not support the requested output budget or chat capabilities.',
+      no_registered_provider:'No inference providers are registered on this chain.',
+      no_eligible_provider:'No registered provider matches the selected provider and payer.',
+    };
+    throw Object.assign(Error(reasons[diagnostic.code] ?? 'No compatible encrypted GPUChain provider is ready for this wallet.'),{
+      status:503,code:diagnostic.code});
   }
   requireValue(target,503,limits.chatProtocol
     ? 'No available chat-protocol provider for this payer and token budget'

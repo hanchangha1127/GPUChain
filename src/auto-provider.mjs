@@ -24,14 +24,15 @@ export async function startAutoProvider({wallet,chainId,readState,backendUrls,li
   const origins = [...new Set((backendUrls ?? defaults).map(loopbackOrigin))];
   if (!origins.length) throw Error('Specify at least one local Strata origin');
 
-  let selected, server, refreshing, closing;
+  let selected, server, refreshing, closing, engineStatus='checking';
   const backends = new Map();
   const headers = apiKey && backendUrls ? {authorization:'Bearer '+apiKey} : undefined;
 
   async function detect(origin) {
     // Do not send a credential to a default port during service discovery.
     const health = await requestJson(origin+'/health',{headers,timeoutMs:probeTimeoutMs,maxBytes:16384});
-    if (health?.loaded!==true || !['strata','ryzenstrata'].includes(health.service?.toLowerCase())) return null;
+    if (typeof health?.service!=='string' || !['strata','ryzenstrata'].includes(health.service.toLowerCase())) return {status:'unrecognized_service'};
+    if (health.loaded!==true) return {status:'model_unloaded'};
     // RYZENStrata uses the canonical Q2_0 profile. Upstream installations can
     // also advertise a bare weight ID with an explicit Qwen family alias.
     const mode = engine ?? (health.model==='qwen3.8-flash-next-q2_0' ? 'ryzenstrata' : 'strata');
@@ -39,16 +40,20 @@ export async function startAutoProvider({wallet,chainId,readState,backendUrls,li
     if (!backends.has(key)) backends.set(key,createStrataBackend({strataUrl:origin,engine:mode,modelId,
       apiKey:headers ? apiKey : undefined}));
     const backend = backends.get(key);
-    await backend.profile(probeTimeoutMs);
-    return backend;
+    try { await backend.profile(probeTimeoutMs); }
+    catch { return {status:'profile_unavailable'}; }
+    return {backend};
   }
 
   async function scan() {
+    const observed=new Set();
     for (const origin of origins) {
-      let backend;
-      try { backend = await detect(origin); } catch { /* The local engine can be off or still loading. */ }
+      let result;
+      try { result=await detect(origin); }
+      catch { result={status:'engine_unreachable'}; }
       if (closing) return;
-      if (!backend) continue;
+      if (!result.backend) { observed.add(result.status); continue; }
+      const {backend}=result;
       selected = {origin,backend};
       if (!server) {
         const next = createProviderServer({wallet,chainId,readState,getBackend:()=>selected?.backend});
@@ -61,9 +66,12 @@ export async function startAutoProvider({wallet,chainId,readState,backendUrls,li
           if (err.code!=='EADDRINUSE') throw err;
         }
       }
+      engineStatus=server?.listening?'ready':'adapter_port_in_use';
       return;
     }
     selected = undefined;
+    // Prefer evidence from a responding engine over an unused fallback port.
+    engineStatus=['profile_unavailable','model_unloaded','unrecognized_service','engine_unreachable'].find(s=>observed.has(s));
   }
 
   function refresh() {
@@ -77,6 +85,7 @@ export async function startAutoProvider({wallet,chainId,readState,backendUrls,li
   return {
     get url() { return server?.listening ? 'http://127.0.0.1:'+server.address().port : null; },
     get backendUrl() { return server?.listening ? selected?.origin ?? null : null; },
+    get engineStatus() { return engineStatus; },
     refresh,
     close() {
       if (!closing) {

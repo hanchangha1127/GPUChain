@@ -597,6 +597,11 @@ export function createBlock(state, tx, wallet) {
 // acknowledgement against an authenticated head. Applies no persistent write.
 export function validateInferenceSpend(state,tx) {
   requireValue(tx?.payload?.type==='inference','Expected a signed inference receipt');
+  validateWalletSpend(state,tx);
+}
+
+export function validateWalletSpend(state,tx) {
+  requireValue(['inference','transfer'].includes(tx?.payload?.type),'Expected a signed wallet payment');
   transition(state,tx);
 }
 

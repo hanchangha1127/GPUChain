@@ -13,6 +13,7 @@ import { manageProviderRelays } from '../src/participant-relay.mjs';
 import { startOpenAiGateway } from '../src/openai-gateway.mjs';
 import { purchaseChat } from '../src/consumer-chat.mjs';
 import { walletSpendCoordinator } from '../src/wallet-spend.mjs';
+import { inspectInferenceRoutes } from '../src/inference-routes.mjs';
 
 export async function startParticipant() {
   const {dir,wallet,port,origin} = await participantConfig();
@@ -26,7 +27,7 @@ export async function startParticipant() {
   });
   let gui, auto, relays, gateway, enabling, gatewayError;
   const spends=walletSpendCoordinator(publicGenesis.hash,wallet.address);
-  const resolveLedger=()=>resolvePublicLedger({write:true});
+  const resolveLedger=({readOnly=false}={})=>resolvePublicLedger({write:!readOnly,activation:readOnly});
   const tokenFile=join(dir,'opencode.token');
   async function enableOpenAi() {
     if (gateway) return gateway.url;
@@ -57,7 +58,14 @@ export async function startParticipant() {
     relays = manageProviderRelays({wallet,chainId:publicGenesis.hash,adapter:auto,node,
       enabled:!!auto && process.env.GPUCHAIN_INFERENCE_RELAY !== '0'});
     const options = {getSnapshot:()=>({...node.snapshot(),relay:relays.status(),spendActivity:spends.activity()}),port:Number(guiPort),
-      providerUrl:process.env.GPUCHAIN_LOCAL_PROVIDER_URL,sender};
+      providerUrl:process.env.GPUCHAIN_LOCAL_PROVIDER_URL,sender,
+      localEngineStatus:()=>auto?.engineStatus ?? (process.env.GPUCHAIN_LOCAL_PROVIDER_URL?'external_adapter':'disabled'),
+      diagnoseRoutes:async()=>{
+        const ledger=await resolveLedger();
+        if (ledger.state.maxOutputTokens<4096) return {code:'output_limit_exceeded',maxOutputTokens:ledger.state.maxOutputTokens};
+        return (await inspectInferenceRoutes(ledger,{payer:wallet.address,transport:'relay',chatProtocol:true,
+          maxOutputTokens:4096})).diagnostic;
+      }};
     try { gui = await startWalletUi(options); }
     catch (err) {
       if (err.code !== 'EADDRINUSE' || process.env.GPUCHAIN_WALLET_PORT !== undefined) throw err;
@@ -71,16 +79,21 @@ export async function startParticipant() {
     try { await auto?.close(); } finally { await node.close(); }
     throw err;
   }
-  return {url:node.url,guiUrl:gui.url,issueUnlock:sender.issueCode,enableOpenAi,
+  return {url:node.url,guiUrl:gui.url,relayStatus:()=>relays.status(),issueUnlock:sender.issueCode,enableOpenAi,
     get openAiUrl() { return gateway?.url ?? null; },
     get openAiError() { return gatewayError; }, async close() {
+    const relayDrain=relays.close(); // Fence new relay admissions before waiting for local purchases.
     try {
       await enabling?.catch(()=>{});
-      try { await gateway?.close(); } finally { await gui.close(); }
+      await gateway?.close();
     } finally {
-      await relays.close();
-      try { await auto?.close(); } finally { await node.close(); }
+      try { await relayDrain; } finally {
+        try { await gui.close(); } finally {
+          try { await auto?.close(); } finally { await node.close(); }
+        }
+      }
     }
+    return relayDrain;
   }};
 }
 

@@ -245,3 +245,99 @@ test('encrypted live relay sends deltas before receipt, retries identical frames
     assert.equal(observed.length,2);
   } finally {gate.resolve();await pump.close();db.close();}
 });
+
+for (const stopAt of ['queued','generating','completion ACK']) {
+  test('provider shutdown finishes the accepted stream when stopped during '+stopAt,{timeout:12_000},async t=>{
+    const db=new DatabaseSync(':memory:');
+    for (const name of ['0004_relay_mailbox','0005_relay_stream','0006_relay_failure']) {
+      db.exec(await readFile(new URL('../hosting/sites/drizzle/'+name+'.sql',import.meta.url),'utf8'));
+    }
+    const provider=generateWallet(), payer=generateWallet(), other=generateWallet(), adapter=sqliteAdapter(db);
+    const chainId=hash('drain '+stopAt),profile={provider:provider.address,model:MODEL,contextWindow:CONTEXT,
+      kvCache:{k:'Q8',v:'Q8'},maxOutputTokens:128,chatProtocol:1};
+    const state={providers:[provider.address],chainId,nonces:{},
+      balances:{[payer.address]:1_000_000_000,[other.address]:1_000_000_000},maxOutputTokens:128};
+    const target=Promise.withResolvers(), release=Promise.withResolvers(), withdrawn=Promise.withResolvers();
+    const admitted=Promise.withResolvers(), completeBoxes=[];
+    let haltedEmptyPoll=false, runs=0, onlineAfterWithdrawal=0, offline=false;
+    const relayUrl=await httpServer(t,async(req,raw)=>{
+      const response=await relayRoute(new Request('https://relay.invalid'+req.url,
+        {method:req.method,headers:req.headers,body:raw||undefined}),adapter,state);
+      const reply=await response.json();
+      if (req.url.endsWith('/submit') && response.status===201) admitted.resolve();
+      if (req.url.endsWith('/presence') && response.ok) {
+        if (JSON.parse(raw).payload.available===false) {offline=true;withdrawn.resolve();}
+        else if (offline) onlineAfterWithdrawal++;
+      }
+      if (stopAt==='queued' && req.url.endsWith('/poll') && !reply.job && !haltedEmptyPoll) {
+        haltedEmptyPoll=true;
+        target.resolve();
+        await release.promise; // In-flight poll saw an empty inbox before a subsequent submission.
+      }
+      if (req.url.endsWith('/complete') && response.ok) {
+        completeBoxes.push(JSON.parse(raw).box);
+        if (stopAt==='completion ACK' && completeBoxes.length===1) {
+          target.resolve();
+          await release.promise;
+          return Response.json({error:'Lost completion acknowledgement'},{status:503});
+        }
+      }
+      return Response.json(reply,{status:response.status});
+    });
+    const messages=[{role:'user',content:'hello'}],chatOptions={stream:true};
+    const message={role:'assistant',content:'ok'},finishReason='stop';
+    const localUrl=await httpServer(t,async(req,raw,res)=>{
+      if (req.url.startsWith('/v1/probe?')) {
+        const challenge=new URL(req.url,'http://local').searchParams.get('challenge');
+        const payload={domain:PROBE_DOMAIN,challenge,chainId,...profile,available:true};
+        return Response.json({payload,signature:sign(provider.privateKey,payload)});
+      }
+      const {request}=JSON.parse(raw);
+      runs++;
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.write('event: delta\ndata: '+JSON.stringify({content:'o'})+'\n\n');
+      if (stopAt==='generating') {target.resolve();await release.promise;}
+      res.write('event: delta\ndata: '+JSON.stringify({content:'k'})+'\n\n');
+      const payload={type:'inference',chainId,from:payer.address,provider:provider.address,nonce:request.nonce,
+        model:MODEL,contextWindow:CONTEXT,requestHash:hash(request),responseHash:hash({message,finishReason}),
+        inputTokens:11,cachedTokens:3,outputTokens:1,kvCache:profile.kvCache};
+      res.end('event: receipt\ndata: '+JSON.stringify({message,finishReason,payload,
+        providerSignature:sign(provider.privateKey,payload)})+'\n\n');
+    });
+    const pump=startProviderRelay({wallet:provider,chainId,relayUrl,adapterUrl:localUrl,pollMs:15,presenceMs:1500});
+    try {
+      let offer;
+      for(let i=0;i<100 && !offer;i++){
+        [offer]=await listRelayOffers(relayUrl,chainId);
+        if(!offer)await delay(15);
+      }
+      assert.ok(offer);
+      const deltas=[];
+      function buy(wallet) {
+        const request={type:'inference-request',chainId,provider:provider.address,payer:wallet.address,nonce:1,
+          expiresAt:Date.now()+120000,messagesHash:hash(messages),chatOptionsHash:hash(chatOptions),maxInputTokens:32,maxOutputTokens:16};
+        return relayInfer({wallet,relayUrl,chainId,provider:provider.address,offer:offer.offer,request,
+          signature:sign(wallet.privateKey,request),messages,chatOptions,onDelta:async d=>deltas.push(d.content),pollMs:15});
+      }
+      if (stopAt==='queued') await target.promise;
+      const response=buy(payer);
+      await Promise.all([target.promise,admitted.promise]);
+      const stopped=pump.close();
+      assert.equal(pump.close(),stopped);
+      await withdrawn.promise;
+      assert.equal(pump.status().state,'draining');
+      assert.deepEqual(await listRelayOffers(relayUrl,chainId),[]);
+      await assert.rejects(buy(other),{status:429}); // Even an unexpired cached offer cannot enter.
+      release.resolve();
+      const [result,drain]=await Promise.all([response,stopped]);
+      assert.equal(drain.confirmed,true);
+      assert.deepEqual(result.message,message);
+      assert.deepEqual(deltas,['o','k']);
+      assert.equal(runs,1);
+      assert.equal(completeBoxes.length,stopAt==='completion ACK'?2:1);
+      assert.equal(new Set(completeBoxes).size,1);
+      assert.equal(onlineAfterWithdrawal,0);
+      assert.equal(pump.status().state,'stopped');
+    } finally {release.resolve();await pump.close();db.close();}
+  });
+}

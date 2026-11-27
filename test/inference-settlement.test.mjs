@@ -7,7 +7,8 @@ import { generateWallet, hash, sign } from '../src/crypto.mjs';
 import { createGenesis, CONTEXT, MODEL, replay } from '../src/ledger.mjs';
 import { nextCheckpoint } from '../src/checkpoint.mjs';
 import { sequencerOutcome } from '../src/transaction-outcome.mjs';
-import { hasPendingInference, recoverPendingInference, settleInference } from '../src/inference-settlement.mjs';
+import { hasPendingInference, recoverPendingInference, recoverWalletPayment, settleInference, settleWalletPayment,
+  walletPaymentStatus } from '../src/inference-settlement.mjs';
 
 async function fixture(t) {
   const directory=await mkdtemp(join(tmpdir(),'gpuchain-settlement-'));
@@ -87,4 +88,34 @@ test('a rejected receipt or an already-consumed nonce cannot trigger another inf
     {code:'settlement_unconfirmed'});
   assert.equal(reads,1);
   assert.equal(hasPendingInference(f.directory),false);
+});
+
+test('an unavailable old sequencer cannot lock a consumed transfer nonce; later review only reads proofs',async t=>{
+  const f=await fixture(t), before=f.ledger(), tx=f.concurrent, digest=hash(tx);
+  const origin=before.url, current='http://127.0.0.1:9981';
+  const next=()=>({...f.ledger(),url:current});
+  const proof=sequencerOutcome(f.commit(tx));
+  let published=false;
+  const urls=[];
+  const request=async(url,{body})=>{
+    assert.equal(body,undefined,'Consumed nonces must never be resubmitted');
+    urls.push(url);
+    if (url.startsWith(origin)) throw Error('Writer permanently retired');
+    if (!published) throw Object.assign(Error('No proof here'),{status:404});
+    return proof;
+  };
+  await assert.rejects(settleWalletPayment(before,tx,{directory:f.directory,resolveLedger:next,request}),{code:'settlement_unconfirmed'});
+  assert.deepEqual(urls.map(url=>new URL(url).origin),[current,origin]);
+  const summary=walletPaymentStatus(f.directory);
+  assert.equal(summary.pending,undefined);
+  assert.equal(summary.lastTransfer.status,'unconfirmed');
+  assert.deepEqual(summary.reviews,[{type:'transfer',nonce:1,txHash:digest,to:tx.payload.to,coins:'0.000000001'}]);
+  assert.equal(await recoverWalletPayment(f.directory,tx.payload.from,()=>assert.fail('Future spending must not wait on this nonce')),null);
+  published=true;
+  const receipt=await recoverWalletPayment(f.directory,tx.payload.from,next,request,{digest,includeReview:true,lookupOnly:true});
+  assert.equal(receipt.status,'confirmed');
+  assert.equal(receipt.txHash,digest);
+  assert.equal(receipt.hash,proof.header.hash);
+  assert.deepEqual(walletPaymentStatus(f.directory).reviews,[]);
+  assert.deepEqual(await recoverWalletPayment(f.directory,tx.payload.from,next,request,{digest}),receipt);
 });

@@ -11,11 +11,12 @@ import { SALE_PRICE_TERMS, SALE_TERMS } from './sale-policy.mjs';
 import { legacyStarterThrough, STARTER_AUTHORIZATION_V2 } from './starter-grants.mjs';
 import { readCheckpoint, readVerifiedState, startNode } from './node.mjs';
 import { createProviderServer } from './provider.mjs';
-import { inferenceRoutes } from './inference-routes.mjs';
+import { inspectInferenceRoutes } from './inference-routes.mjs';
 import { purchaseChat } from './consumer-chat.mjs';
 import { normalizeProviderEndpoint } from './provider-endpoint.mjs';
 import { publicGenesis, resolvePublicLedger } from './public-network.mjs';
 import { submitSignedTransaction } from './submit-transaction.mjs';
+import { settleWalletPayment, unconfirmedTransfer } from './inference-settlement.mjs';
 import { walletSpendCoordinator } from './wallet-spend.mjs';
 import { startValidator } from './validator.mjs';
 import { enrollAt } from './validator-enroll.mjs';
@@ -32,8 +33,8 @@ const usage = `GPUChain
            [--listen HOST] [--port 8789]   (optional backend credential: STRATA_API_KEY)
   status | verify   [--genesis FILE] [--ledger URL]
   balance  [--genesis FILE] --address ADDRESS [--ledger URL]
-  transfer [--genesis FILE] --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL]
-  recover-settlement --wallet KEY [--genesis FILE] [--ledger URL]
+  transfer [--genesis FILE] --wallet KEY --to ADDRESS --coins DECIMAL [--ledger URL] [--acknowledge-unconfirmed SIGNED_TX_HASH]
+  recover-settlement --wallet KEY [--tx-hash SIGNED_TX_HASH] [--genesis FILE] [--ledger URL]
   issue-reserve --wallet SEQUENCER_KEY [--ledger URL]  (one-time original public genesis distribution)
   promote-mainnet --wallet SEQUENCER_KEY [--ledger URL]
   authorize-sales --wallet RESERVE_KEY --authority SALE_ADDRESS --coins LIFETIME_CAP [--ledger URL]
@@ -69,8 +70,8 @@ const flags = {
   status: ['genesis','ledger'], verify: ['genesis','ledger'],
   routes: ['genesis','ledger','max-output','wallet','transport'],
   balance: ['genesis','ledger','address'],
-  transfer: ['genesis','ledger','wallet','to','coins'],
-  'recover-settlement':['genesis','ledger','wallet'],
+  transfer: ['genesis','ledger','wallet','to','coins','acknowledge-unconfirmed'],
+  'recover-settlement':['genesis','ledger','wallet','tx-hash'],
   'issue-reserve': ['genesis','ledger','wallet'],
   'promote-mainnet': ['genesis','ledger','wallet'],
   chat: ['genesis','ledger','wallet','provider-url','provider-address','text','text-file','max-input','max-output',
@@ -256,8 +257,8 @@ async function main() {
       srv.close(err => err ? reject(err) : resolve())));
   }
   const write = !['verify','status','routes','balance'].includes(command);
-  const resolveLedger=async()=>{
-    if (discover) return resolvePublicLedger({write});
+  const resolveLedger=async({readOnly=false}={})=>{
+    if (discover) return resolvePublicLedger({write:write && !readOnly,activation:readOnly});
     const checkpoint=await readCheckpoint(fixed,genesis.hash);
     return {url:fixed,checkpoint,state:checkpoint.state};
   };
@@ -265,10 +266,11 @@ async function main() {
     const wallet=await walletFrom(v);
     const spends=walletSpendCoordinator(genesis.hash,wallet.address);
     if (command==='recover-settlement') {
-      const receipt=await spends.run('recovery',resolveLedger);
-      return print({status:receipt?'confirmed':'no_pending_payment',...(receipt??{})});
+      const receipt=await spends.run('recovery',resolveLedger,undefined,{digest:v['tx-hash']});
+      return print({status:receipt?'confirmed':v['tx-hash']?'no_matching_record':'no_pending_payment',...(receipt??{})});
     }
-    return spends.run(command==='chat'?'inference':'transaction',resolveLedger,async directory=>
+    const kind=command==='chat'?'inference':command==='transfer'?'transfer':'transaction';
+    return spends.run(kind,resolveLedger,async directory=>
       writeCommand(command,v,wallet,await resolveLedger(),resolveLedger,directory,genesis));
   }
   const ledger=await resolveLedger();
@@ -277,8 +279,8 @@ async function main() {
   if (command === 'routes') {
     const maxOutputTokens = uint(v['max-output'] ?? 1,'max-output',1,state.maxOutputTokens);
     const payer = v.wallet ? (await walletFrom(v)).address : undefined;
-    const routes = await inferenceRoutes(ledger,{payer,transport:v.transport,maxOutputTokens});
-    return print({providers:routes.map(({offer,...summary})=>summary)});
+    const {routes,diagnostic} = await inspectInferenceRoutes(ledger,{payer,transport:v.transport,maxOutputTokens});
+    return print({providers:routes.map(({offer,...summary})=>summary),diagnostic});
   }
   if (command === 'verify') return print({verified:true,scope:checkpoint.authority ? 'validator-consensus' : 'signed-checkpoint',
     chainId:state.chainId,networkId:state.networkId,networkStage:state.networkStage ?? null,height:state.height,tip:state.tip});
@@ -307,7 +309,14 @@ async function writeCommand(command,v,wallet,ledger,resolveLedger,directory,gene
   const common = {chainId:state.chainId,from:wallet.address,nonce:nextNonce(state,wallet.address)};
   let details;
   if (command === 'transfer') {
-    details = {to:address(required(v,'to')),amount:parseCoins(required(v,'coins'))};
+    const payload={type:'transfer',...common,to:address(required(v,'to')),amount:parseCoins(required(v,'coins'))};
+    const prior=unconfirmedTransfer(directory,payload.to,payload.amount);
+    if (prior!==v['acknowledge-unconfirmed']) {
+      if (prior) throw Error('An earlier transfer of this amount to this recipient has no confirmed outcome. Check recover-settlement --tx-hash '+
+        prior+'. To authorize a separate transfer, add --acknowledge-unconfirmed '+prior);
+      throw Error('The supplied transaction hash does not match a retained unconfirmed transfer. Review the current payment before sending.');
+    }
+    return print(await settleWalletPayment(ledger,{payload,signature:sign(wallet.privateKey,payload)},{directory,resolveLedger}));
   } else if (command==='configure-sale-price') {
     if (wallet.address!==DISTRIBUTION_RESERVE.address || state.chainId!==MAINNET.chainId || state.networkStage!=='mainnet') {
       throw Error('The public mainnet reserve wallet is required to configure the sale price');

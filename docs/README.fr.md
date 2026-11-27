@@ -8,7 +8,7 @@ Chaque portefeuille GPUChain déjà inscrit au registre du réseau principal peu
 
 1. Dans le dépôt GPUChain, lancez `npm run gui` ou ouvrez **GPUChain Wallet.cmd** sous Windows. Copiez l’adresse publique de votre portefeuille (64 caractères).
 2. Collez l’adresse sur le site officiel et cliquez sur **Vérifier l’adresse**. [https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/](https://gpuchain-ledger-hch.authentictarragon2.chatgpt.site/)
-3. Si le portefeuille est éligible, cliquez sur **Recevoir 1 000 coins**. Pour un portefeuille créé localement, réessayez après sa première inscription au registre du réseau principal.
+3. Si le portefeuille est éligible, cliquez sur **Recevoir 1 000 coins**. Pour un portefeuille créé localement, vérifiez à nouveau après sa première opération sur le réseau principal, par exemple après avoir reçu un virement GPUChain.
 
 Les nouveaux paiements en USDT sont temporairement suspendus. Si vous avez déjà payé, vous pouvez consulter votre commande sur le même site avec son identifiant d’origine.
 

@@ -6,12 +6,10 @@ import { addressFromPrivateKey, hash } from './crypto.mjs';
 import { EPOCH_TOKENS, replay } from './ledger.mjs';
 import { bundledMainnetAnchor } from './public-network.mjs';
 
-import { authenticate, nextCheckpoint, verifyAdvance } from './checkpoint.mjs';
+import { authenticate, checkpointHttp, nextCheckpoint, verifyAdvance } from './checkpoint.mjs';
+import { fetchSignedCheckpoint } from './checkpoint-fetch.mjs';
 import { outcomeRoute, sequencerOutcome } from './transaction-outcome.mjs';
 import { openOutcomes } from './local-outcomes.mjs';
-
-const HEX = /^[0-9a-f]{64}$/;
-const MAX_CHECKPOINT = 64 * 1024 * 1024;
 
 function check(ok, reason) {
   if (!ok) throw Error(reason);
@@ -38,15 +36,7 @@ function ledgerOrigin(endpoint) {
 }
 
 export async function readCheckpoint(url, chainId) {
-  check(typeof chainId === 'string' && HEX.test(chainId), 'A pinned genesis hash is required');
-  const res = await fetch(ledgerOrigin(url) + '/v1/checkpoint', {
-    redirect:'error', signal:AbortSignal.timeout(30_000)
-  });
-  if (!res.ok) {
-    await res.body?.cancel();
-    throw Error('Checkpoint endpoint returned HTTP ' + res.status);
-  }
-  const checkpoint=authenticate(await jsonBody(res.body, MAX_CHECKPOINT), chainId);
+  const checkpoint=await fetchSignedCheckpoint(ledgerOrigin(url),chainId);
   const launch=bundledMainnetAnchor(chainId);
   if (launch) verifyAdvance(launch,checkpoint);
   return checkpoint;
@@ -151,7 +141,7 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
   }
   function submit(tx) {
     const {block, next} = nextCheckpoint(head, tx, wallet);
-    save(head, next,tx.payload.type==='inference'?sequencerOutcome(block):undefined);
+    save(head, next,['inference','transfer'].includes(tx.payload.type)?sequencerOutcome(block):undefined);
     head = next;
     return block;
   }
@@ -162,7 +152,11 @@ export async function startNode({dir, genesis, wallet, listen = '127.0.0.1', por
     }
     try {
       if (req.method === 'GET' && req.url === '/v1/genesis') return send(200, genesis);
-      if (req.method === 'GET' && req.url === '/v1/checkpoint') return send(200, head);
+      if (req.method === 'GET' && req.url === '/v1/checkpoint') {
+        const reply=checkpointHttp(head,req.headers['if-none-match']);
+        res.writeHead(reply.status,reply.headers);
+        return res.end(reply.body);
+      }
       if (req.method==='GET' && outcomeRoute.test(req.url)) {
         const proof=outcomes.find(outcomeRoute.exec(req.url)[1]);
         return proof?send(200,proof):send(404,{error:'Transaction outcome unavailable'});
